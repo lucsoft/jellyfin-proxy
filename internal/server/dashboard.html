@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jellyfin Proxy</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7; --surface-1: #fcfcfb; --text-primary: #0b0b0b; --text-secondary: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --series-1: #2a78d6; --series-2: #1baf7a; --series-3: #eb6834; --series-7: #6250d6;
+  --seq-light: #b7d3f6;
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --series-1: #3987e5; --series-2: #199e70; --series-3: #d95926; --series-7: #9085e9;
+    --seq-light: #184f95;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface-1: #1a1a19; --text-primary: #f0efec; --text-secondary: #c3c2b7;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+  --series-1: #3987e5; --series-2: #199e70; --series-3: #d95926; --series-7: #9085e9;
+  --seq-light: #184f95;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text-primary); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 16px; margin: 0; }
+h3 { font-size: 13px; color: var(--text-secondary); margin: 0 0 8px; font-weight: 600; }
+.muted { color: var(--text-secondary); }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.grid .card { margin: 0; }
+
+.status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; font-size: 13px; color: var(--text-primary); }
+.status i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.status.ok i { background: var(--good); } .status.warn i { background: var(--warning); } .status.error i { background: var(--critical); }
+.status .icon { font-style: normal; }
+
+.hero { display: flex; gap: 32px; flex-wrap: wrap; align-items: flex-end; margin: 14px 0 18px; }
+.hero-figure { font-size: 52px; font-weight: 600; line-height: 1; }
+.tile { display: flex; flex-direction: column; gap: 2px; }
+.tile .label { font-size: 12px; color: var(--text-secondary); }
+.tile .value { font-size: 20px; font-weight: 600; }
+.tile .key { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: 0; }
+
+.trackrow { display: grid; grid-template-columns: 130px 1fr; gap: 10px; align-items: center; margin: 6px 0; }
+.trackrow > span { font-size: 12px; color: var(--text-secondary); text-align: right; }
+.track { position: relative; height: 20px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.track svg { display: block; width: 100%; height: 100%; }
+.scale { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-left: 140px; font-variant-numeric: tabular-nums; }
+.legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--text-secondary); margin: 10px 0 0; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.legend i.line { height: 2px; vertical-align: 3px; width: 14px; border-radius: 1px; }
+
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; margin-top: 20px; }
+.chart { position: relative; }
+.chart svg { display: block; width: 100%; height: 190px; overflow: visible; }
+.chart .tip { position: absolute; pointer-events: none; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; font-size: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.12); white-space: nowrap; display: none; z-index: 2; }
+.chart .tip b { font-weight: 600; }
+.chart .tip i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+.tick { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.dlabel { fill: var(--text-secondary); font-size: 11px; }
+details { margin-top: 10px; font-size: 12px; }
+details summary { cursor: pointer; }
+details table { border-collapse: collapse; margin-top: 6px; font-variant-numeric: tabular-nums; }
+details td, details th { padding: 2px 12px 2px 0; text-align: right; border-bottom: 1px solid var(--grid); font-weight: normal; }
+details th { color: var(--text-secondary); }
+
+ul.facts { list-style: none; margin: 0; padding: 0; }
+ul.facts li { padding: 7px 0 7px 16px; border-bottom: 1px solid var(--grid); position: relative; }
+ul.facts li:last-child { border-bottom: 0; }
+ul.facts li::before { content: ""; position: absolute; left: 0; top: 14px; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+ul.facts li.warn::before { background: var(--warning); } ul.facts li.error::before { background: var(--critical); }
+ul.facts .title { font-weight: 600; display: block; }
+ul.facts .text { color: var(--text-secondary); display: block; }
+.bar { height: 4px; background: var(--grid); border-radius: 2px; overflow: hidden; margin-top: 5px; max-width: 260px; }
+.bar > div { height: 100%; background: var(--series-1); border-radius: 2px; }
+.bar.urgent > div { background: var(--series-3); }
+pre { margin: 6px 0 0; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto; }
+
+.events { max-height: 460px; overflow: auto; }
+.filters { display: flex; gap: 6px; margin-left: auto; }
+.filters button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text-primary); cursor: pointer; }
+.filters button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+.empty { padding: 40px 0; text-align: center; color: var(--text-secondary); }
+@media (max-width: 600px) {
+  .trackrow { grid-template-columns: 1fr; gap: 2px; }
+  .trackrow > span { text-align: left; }
+  .scale { margin-left: 0; }
+  .hero-figure { font-size: 44px; }
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Jellyfin Proxy</h1>
+    <span class="muted mono" id="upstream"></span>
+    <span class="status ok" id="live" style="margin-left:auto"><i></i><span id="clock"></span></span>
+  </header>
+  <div id="sources"></div>
+  <section class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
+      <h2>Events</h2>
+      <span class="muted">Why something happened – newest first</span>
+      <div class="filters">
+        <button data-f="all" aria-pressed="true">All</button>
+        <button data-f="warn" aria-pressed="false">Problems only</button>
+      </div>
+    </div>
+    <ul class="facts events" id="events"></ul>
+  </section>
+  <p class="muted mono" id="config"></p>
+</main>
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const clock = sec => { sec = Math.max(0, Math.floor(sec || 0)); const h = Math.floor(sec/3600), m = Math.floor(sec/60)%60, s = sec%60;
+  return (h ? h + ':' + String(m).padStart(2,'0') : m) + ':' + String(s).padStart(2,'0'); };
+const mb = b => b >= 1e9 ? (b/1e9).toFixed(2) + ' GB' : (b/1e6).toFixed(0) + ' MB';
+const ago = ms => ms < 1500 ? 'just now' : ms < 90e3 ? Math.round(ms/1000) + ' s' : Math.round(ms/60e3) + ' min';
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const time = t => new Date(t).toLocaleTimeString('en-GB');
+const SVG = 'http://www.w3.org/2000/svg';
+const ICON = {ok: '✓', warn: '!', error: '✕'};
+
+let lastSeq = 0, events = [], filter = 'all';
+const history = {}; // source id -> [{t, seg, raw, down, need}]
+const HISTORY_MS = 10 * 60e3;
+
+document.querySelectorAll('.filters button').forEach(b => b.onclick = () => {
+  filter = b.dataset.f;
+  document.querySelectorAll('.filters button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  renderEvents();
+});
+
+async function poll() {
+  try {
+    const r = await fetch('/proxy/api/state?since=' + lastSeq, {cache: 'no-store'});
+    render(await r.json());
+    $('#live').className = 'status ok';
+  } catch (e) {
+    $('#live').className = 'status error';
+  }
+  setTimeout(poll, 1000);
+}
+
+function render(st) {
+  $('#upstream').textContent = st.upstream;
+  $('#clock').textContent = time(st.now);
+  const c = st.config;
+  $('#config').textContent = `Server requests ${c.block_mib} MiB × ${c.workers} connections · read-ahead ${c.readahead_mib} MiB · ` +
+    `segments ${c.segment_sec} s, up to ${c.max_ahead} ahead, ${c.keep_behind} kept behind · audio ${c.audio}`;
+  for (const e of st.events) { events.push(e); lastSeq = Math.max(lastSeq, e.seq); }
+  if (events.length > 500) events = events.slice(-500);
+  if (st.events.length) renderEvents();
+
+  const box = $('#sources');
+  const list = st.sources || [];
+  if (!list.length) { box.innerHTML = '<div class="card empty">Nothing playing. Start a movie on a client.</div>'; return; }
+  if ($('.empty', box)) box.innerHTML = '';
+  const seen = new Set();
+  for (const s of list) {
+    seen.add(s.id);
+    let el = document.getElementById('src-' + s.id);
+    if (!el) { el = document.createElement('section'); el.id = 'src-' + s.id; el.innerHTML = skeleton(); box.appendChild(el); }
+    renderSource(el, s);
+  }
+  for (const el of [...box.children]) if (!seen.has(el.id.slice(4))) el.remove();
+}
+
+function skeleton() {
+  return `<div class="card">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+      <h2 data-k="name"></h2><span class="muted mono" data-k="label"></span>
+      <span class="status" data-k="status" style="margin-left:auto"></span>
+    </div>
+    <div class="hero">
+      <div class="tile"><span class="label">Buffer ahead of the client</span><span class="hero-figure" data-k="total"></span></div>
+      <div class="tile"><span class="label"><i class="key" style="background:var(--series-1)"></i>Finished segments</span><span class="value" data-k="segsec"></span></div>
+      <div class="tile"><span class="label"><i class="key" style="background:var(--series-2)"></i>Raw data in cache</span><span class="value" data-k="rawsec"></span></div>
+      <div class="tile"><span class="label">Download (30 s)</span><span class="value" data-k="down"></span></div>
+      <div class="tile"><span class="label">Movie average</span><span class="value" data-k="need"></span></div>
+      <div class="tile"><span class="label">Client position</span><span class="value" data-k="clientpos"></span></div>
+    </div>
+    <div class="trackrow"><span>Segments (time)</span><div class="track" data-k="segtrack"><svg preserveAspectRatio="none"></svg></div></div>
+    <div class="trackrow"><span>Cache (file)</span><div class="track" data-k="cachetrack"><svg preserveAspectRatio="none"></svg></div></div>
+    <div class="scale"><span>0:00</span><span data-k="mid"></span><span data-k="end"></span></div>
+    <div class="legend">
+      <span><i style="background:var(--series-1)"></i>Finished segment</span>
+      <span><i style="background:var(--series-2)"></i>Cached (partly cached lighter)</span>
+      <span><i style="background:var(--series-3)"></i>Loading now</span>
+      <span><i class="line" style="background:var(--text-primary)"></i>Client</span>
+      <span><i class="line" style="background:var(--series-7)"></i>ffmpeg / reader</span>
+    </div>
+    <div class="charts">
+      <div class="chart" data-k="bufchart"><h3>Buffer ahead of the client · last 10 min</h3><svg></svg><div class="tip"></div>
+        <div class="legend"><span><i style="background:var(--series-1)"></i>Finished segments</span><span><i style="background:var(--series-2)"></i>Raw data in cache</span></div></div>
+      <div class="chart" data-k="ratechart"><h3>Download vs. movie bitrate (Mbit/s) · last 10 min</h3><svg></svg><div class="tip"></div>
+        <div class="legend"><span><i class="line" style="background:var(--series-1)"></i>Download</span><span><i class="line" style="background:var(--muted)"></i>Movie average</span></div></div>
+    </div>
+    <details data-k="details"><summary class="muted">Table view</summary><div data-k="table"></div></details>
+  </div>
+  <div class="grid">
+    <div class="card"><h3>Playback</h3><div data-k="ffmpeg"></div></div>
+    <div class="card"><h3>Downloads from the server</h3><div data-k="fetches"></div></div>
+    <div class="card"><h3>Client requests</h3><div data-k="client"></div></div>
+  </div>`;
+}
+
+function renderSource(el, s) {
+  const k = n => el.querySelector(`[data-k="${n}"]`);
+  const b = s.buffer, ss = s.session, cs = s.cache;
+  const direct = s.mode === 'direct' && !ss;
+  k('name').textContent = s.name || s.id;
+  k('label').textContent = [s.label, s.container, cs && mb(cs.size), s.mode && (s.mode === 'direct' ? 'Direct Play' : 'HLS')].filter(Boolean).join(' · ');
+  const lvl = b ? b.level : 'warn';
+  k('status').className = 'status ' + lvl;
+  k('status').innerHTML = `<i></i><span class="icon">${ICON[lvl]}</span><span>${esc(b ? b.status : ss ? 'Reading index…' : cs ? 'Cache only, not playing' : 'Ready')}</span>`;
+  k('total').textContent = b ? clock(b.total_sec) : '–';
+  k('segsec').textContent = b ? clock(b.segments_sec) : '–';
+  k('rawsec').textContent = b ? clock(b.raw_sec) : '–';
+  k('down').textContent = cs ? cs.mbps_30s.toFixed(0) + ' Mbit/s' : '–';
+  k('need').textContent = b && b.need_mbps ? b.need_mbps.toFixed(0) + ' Mbit/s' : '–';
+  const reported = s.client && s.client.at && !s.client.at.startsWith('0001');
+  k('clientpos').textContent = reported ? clock(s.client.position) + (s.client.paused ? ' (paused)' : '') : ss && ss.client_segment >= 0 ? clock(ss.client_time) : '–';
+  const dur = s.duration || (ss && ss.duration) || 0;
+  k('mid').textContent = dur ? clock(dur/2) : '';
+  k('end').textContent = dur ? clock(dur) : '';
+
+  drawSegTrack(k('segtrack'), ss, dur, reported ? s.client.position : null);
+  drawCacheTrack(k('cachetrack'), cs);
+
+  const h = history[s.id] ||= [];
+  if (b) h.push({t: Date.now(), seg: b.segments_sec, raw: b.raw_sec, down: b.down_mbps, need: b.need_mbps});
+  while (h.length && h[0].t < Date.now() - HISTORY_MS) h.shift();
+  areaChart(k('bufchart'), h);
+  lineChart(k('ratechart'), h);
+  if (k('details').open) k('table').innerHTML = tableView(h);
+
+  k('ffmpeg').innerHTML = direct
+    ? facts([{title: 'Direct Play', text: 'No ffmpeg needed: the client can play this audio track and reads the MKV straight from the cache.'}])
+    : ffmpegHTML(ss);
+  k('fetches').innerHTML = fetchHTML(cs);
+  k('client').innerHTML = direct ? directHTML(cs) : clientHTML(ss);
+}
+
+// ---------------------------------------------------------------- tracks
+
+function svgEl(name, attrs) {
+  const e = document.createElementNS(SVG, name);
+  for (const [a, v] of Object.entries(attrs)) e.setAttribute(a, v);
+  return e;
+}
+
+function trackSvg(track) {
+  const svg = track.querySelector('svg');
+  svg.setAttribute('viewBox', '0 0 1000 20');
+  svg.replaceChildren();
+  return svg;
+}
+
+function marker(svg, x, color, title) {
+  const m = svgEl('rect', {x: x * 1000 - 1.5, y: 0, width: 3, height: 20, fill: color});
+  m.appendChild(svgEl('title', {})).textContent = title;
+  svg.appendChild(m);
+}
+
+function drawSegTrack(track, ss, dur, clientPos) {
+  const svg = trackSvg(track);
+  if (!dur) return;
+  for (const [a, b] of (ss && ss.ready_time) || []) {
+    svg.appendChild(svgEl('rect', {x: a/dur*1000, y: 0, width: Math.max(1.5, (b-a)/dur*1000), height: 20, fill: css('--series-1')}));
+  }
+  if (ss && ss.run && ss.run.state !== 'done') marker(svg, ss.run.next_time/dur, css('--series-7'), 'ffmpeg at ' + clock(ss.run.next_time));
+  const tv = clientPos ?? (ss && ss.client_segment >= 0 ? ss.client_time : null);
+  if (tv != null) marker(svg, tv/dur, css('--text-primary'), 'client at ' + clock(tv));
+}
+
+function drawCacheTrack(track, cs) {
+  const svg = trackSvg(track);
+  if (!cs) return;
+  const n = cs.map.length, w = 1000 / n;
+  cs.map.forEach((f, i) => {
+    if (f > 0) svg.appendChild(svgEl('rect', {x: i*w, y: 0, width: w + 0.5, height: 20, fill: f > 0.99 ? css('--series-2') : css('--seq-light')}));
+  });
+  for (const f of cs.fetches || []) {
+    svg.appendChild(svgEl('rect', {x: f.start/cs.size*1000, y: 12, width: Math.max(3, (f.end-f.start)/cs.size*1000), height: 8, fill: css('--series-3')}));
+  }
+  for (const rd of cs.readers || []) marker(svg, rd.pos/cs.size, css('--series-7'), `${rd.name} at ${mb(rd.pos)}`);
+}
+
+// ---------------------------------------------------------------- charts
+// Buffer (minutes) and rate (Mbit/s) are different units: two charts, one y-axis each.
+
+const PAD = {l: 46, r: 12, t: 12, b: 22};
+
+function frame(box) {
+  const svg = box.querySelector('svg');
+  const W = svg.clientWidth || 400, H = svg.clientHeight || 190;
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.replaceChildren();
+  const now = Date.now(), t0 = now - HISTORY_MS;
+  const X = t => PAD.l + (t - t0) / HISTORY_MS * (W - PAD.l - PAD.r);
+  return {svg, W, H, X, now};
+}
+
+function niceMax(v, step) { return Math.max(step, Math.ceil(v / step) * step); }
+
+function axes(f, yMax, fmt, ticks) {
+  const {svg, W, H} = f, ph = H - PAD.t - PAD.b;
+  for (let i = 0; i <= ticks; i++) {
+    const v = yMax * i / ticks, y = PAD.t + ph - v / yMax * ph;
+    svg.appendChild(svgEl('line', {x1: PAD.l, x2: W - PAD.r, y1: y, y2: y, stroke: css(i ? '--grid' : '--axis'), 'stroke-width': 1}));
+    const t = svgEl('text', {x: PAD.l - 6, y: y + 4, 'text-anchor': 'end', class: 'tick'});
+    t.textContent = fmt(v); svg.appendChild(t);
+  }
+  for (const [m, anchor] of [[10, 'start'], [5, 'middle'], [0, 'end']]) {
+    const t = svgEl('text', {x: f.X(f.now - m*60e3), y: H - 5, 'text-anchor': anchor, class: 'tick'});
+    t.textContent = m ? `−${m} min` : 'now'; svg.appendChild(t);
+  }
+  return v => PAD.t + ph - Math.min(Math.max(v, 0), yMax) / yMax * ph;
+}
+
+function path(h, X, Y, val) { return h.map((p, i) => (i ? 'L' : 'M') + X(p.t).toFixed(1) + ',' + Y(val(p)).toFixed(1)).join(''); }
+
+function line(f, d, color) {
+  f.svg.appendChild(svgEl('path', {d, fill: 'none', stroke: css(color), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-linecap': 'round'}));
+}
+
+function endLabel(f, x, y, text) {
+  // Up and to the left of the end point, so it never sits on the line itself.
+  const t = svgEl('text', {x: Math.min(x, f.W - PAD.r) - 10, y: Math.max(y - 12, PAD.t + 9), 'text-anchor': 'end', class: 'dlabel'});
+  t.textContent = text; f.svg.appendChild(t);
+}
+
+// Stacked area: finished segments at the bottom, raw cache on top.
+function areaChart(box, h) {
+  const f = frame(box);
+  // Steps of 15 s, 1 min or 5 min so the four tick labels stay round.
+  const top = Math.max(60, ...h.map(p => p.seg + p.raw));
+  const yMax = niceMax(top, top <= 120 ? 60 : top <= 600 ? 240 : 1200);
+  const Y = axes(f, yMax, v => clock(v), 4);
+  const layers = [
+    {top: p => p.seg + p.raw, low: p => p.seg, color: '--series-2', name: 'Raw data in cache', v: p => p.raw},
+    {top: p => p.seg, low: () => 0, color: '--series-1', name: 'Finished segments', v: p => p.seg},
+  ];
+  if (h.length >= 2) {
+    for (const L of layers) {
+      const top = path(h, f.X, Y, L.top);
+      const bottom = h.slice().reverse().map(p => 'L' + f.X(p.t).toFixed(1) + ',' + Y(L.low(p)).toFixed(1)).join('');
+      f.svg.appendChild(svgEl('path', {d: top + bottom + 'Z', fill: css(L.color), 'fill-opacity': 0.12}));
+      line(f, top, L.color);
+    }
+    const p = h.at(-1);
+    endLabel(f, f.X(p.t), Y(p.seg + p.raw), clock(p.seg + p.raw) + ' total');
+  }
+  hover(box, f, h, [
+    {name: 'Finished segments', color: '--series-1', y: p => Y(p.seg), text: p => clock(p.seg)},
+    {name: 'Raw data in cache', color: '--series-2', y: p => Y(p.seg + p.raw), text: p => clock(p.raw)},
+  ]);
+}
+
+function lineChart(box, h) {
+  const f = frame(box);
+  const yMax = niceMax(Math.max(20, ...h.map(p => Math.max(p.down, p.need))) * 1.1, 20);
+  const Y = axes(f, yMax, v => v.toFixed(0), 4);
+  if (h.length >= 2) {
+    const need = h.at(-1).need;
+    if (need) {
+      line(f, path(h, f.X, Y, p => p.need), '--muted');
+      // Label sits on the line where it starts, not at the empty left edge.
+      const t = svgEl('text', {x: Math.max(PAD.l + 4, f.X(h[0].t) - 4), y: Y(need) + 14, 'text-anchor': f.X(h[0].t) > f.W / 2 ? 'end' : 'start', class: 'dlabel'});
+      t.textContent = `movie average ${need.toFixed(0)}`; f.svg.appendChild(t);
+    }
+    line(f, path(h, f.X, Y, p => p.down), '--series-1');
+    const p = h.at(-1);
+    f.svg.appendChild(svgEl('circle', {cx: f.X(p.t), cy: Y(p.down), r: 4, fill: css('--series-1'), stroke: css('--surface-1'), 'stroke-width': 2}));
+    endLabel(f, f.X(p.t), Y(p.down), p.down.toFixed(0) + ' Mbit/s');
+  }
+  hover(box, f, h, [
+    {name: 'Download', color: '--series-1', y: p => Y(p.down), text: p => p.down.toFixed(0) + ' Mbit/s'},
+    {name: 'Movie average', color: '--muted', y: p => Y(p.need), text: p => p.need.toFixed(0) + ' Mbit/s'},
+  ]);
+}
+
+// Crosshair + tooltip on the nearest sample; the whole plot is the hit area.
+function hover(box, f, h, series) {
+  const tip = box.querySelector('.tip');
+  const g = svgEl('g', {visibility: 'hidden'});
+  const cross = svgEl('line', {y1: PAD.t, y2: f.H - PAD.b, stroke: css('--axis'), 'stroke-width': 1});
+  g.appendChild(cross);
+  const dots = series.map(s => g.appendChild(svgEl('circle', {r: 4, fill: css(s.color), stroke: css('--surface-1'), 'stroke-width': 2})));
+  f.svg.appendChild(g);
+  f.svg.onpointerleave = () => { tip.style.display = 'none'; g.setAttribute('visibility', 'hidden'); };
+  f.svg.onpointermove = e => {
+    if (h.length < 2) return;
+    const r = f.svg.getBoundingClientRect(), x = (e.clientX - r.left) * f.W / r.width;
+    let best = h[0];
+    for (const p of h) if (Math.abs(f.X(p.t) - x) < Math.abs(f.X(best.t) - x)) best = p;
+    const bx = f.X(best.t);
+    cross.setAttribute('x1', bx); cross.setAttribute('x2', bx);
+    series.forEach((s, i) => { dots[i].setAttribute('cx', bx); dots[i].setAttribute('cy', s.y(best)); });
+    g.setAttribute('visibility', 'visible');
+    tip.innerHTML = `<b>${time(best.t)}</b><br>` + series.map(s => `<i style="background:var(${s.color})"></i>${s.name}: <b>${s.text(best)}</b>`).join('<br>');
+    tip.style.display = 'block';
+    const left = bx / f.W * r.width + 12;
+    tip.style.left = Math.min(left, r.width - tip.offsetWidth) + 'px';
+    tip.style.top = '34px';
+  };
+}
+
+function tableView(h) {
+  if (!h.length) return '<p class="muted">No samples yet.</p>';
+  const rows = h.filter((_, i) => i % 10 === 0 || i === h.length - 1).slice(-60).reverse();
+  return '<table><tr><th>Time</th><th>Segments</th><th>Raw cache</th><th>Download</th><th>Movie avg</th></tr>' +
+    rows.map(p => `<tr><td>${time(p.t)}</td><td>${clock(p.seg)}</td><td>${clock(p.raw)}</td><td>${p.down.toFixed(0)} Mbit/s</td><td>${p.need.toFixed(0)} Mbit/s</td></tr>`).join('') + '</table>';
+}
+
+// ---------------------------------------------------------------- lists (title + text)
+
+function facts(items) {
+  return '<ul class="facts">' + items.map(i =>
+    `<li class="${i.level || ''}"><span class="title">${i.title}</span>${i.text ? `<span class="text">${i.text}</span>` : ''}${i.extra || ''}</li>`).join('') + '</ul>';
+}
+
+function ffmpegHTML(ss) {
+  if (!ss) return '<span class="muted">No session</span>';
+  if (ss.failed) return facts([{title: 'Playback failed', text: esc(ss.failed), level: 'error'}]);
+  const r = ss.run, items = [];
+  if (!r) items.push({title: 'ffmpeg idle', text: 'Starts again with the next client request.'});
+  else {
+    const level = r.state === 'crashed' ? 'error' : r.state === 'paused' ? 'warn' : '';
+    items.push({title: `ffmpeg ${esc(r.state)}`, level,
+      text: `Run ${r.id}, PID ${r.pid}, for ${ago(r.age_ms)}${r.pauses ? `, paused ${r.pauses}×` : ''}`});
+    items.push({title: 'Started at', text: `Segment ${r.start} (${clock(r.start_time)})`});
+    items.push({title: 'Produced up to', text: r.next > r.start ? `Segment ${r.next - 1} (${clock(r.next_time)})` : 'No segment yet'});
+    items.push({title: 'Why it started', text: esc(r.reason)});
+    if (r.err) items.push({title: 'Error', text: esc(r.err), level: 'error'});
+    if (r.stderr && r.stderr.length) items.push({title: 'ffmpeg output', extra: `<pre class="mono muted">${esc(r.stderr.join('\n'))}</pre>`});
+  }
+  items.push({title: 'Totals', text: `${ss.restarts} restarts · ${ss.deleted} old segments deleted · ${ss.segments} segments`});
+  return facts(items);
+}
+
+function fetchHTML(cs) {
+  if (!cs) return '<span class="muted">No cache</span>';
+  const items = [{title: `${cs.mbps_5s.toFixed(0)} Mbit/s right now`,
+    text: `${mb(cs.have)} local · ${mb(cs.fetched)} downloaded · ${mb(cs.evicted)} released${cs.splits ? ` · split ${cs.splits}× for a waiting reader` : ''}`}];
+  if (cs.fatal) items.push({title: 'Server refuses the file', text: esc(cs.fatal), level: 'error'});
+  if (cs.cooldown_ms) items.push({title: 'Paused after errors', text: `for ${ago(cs.cooldown_ms)}`, level: 'warn'});
+  if (cs.waiting && cs.waiting.length) items.push({title: 'A reader is waiting', text: 'at ' + cs.waiting.map(mb).join(', '), level: 'error'});
+  const fs = cs.fetches || [];
+  if (!fs.length) items.push({title: 'No requests running', text: 'Read-ahead is full or there is nothing to do.'});
+  for (const f of fs) {
+    const p = (f.cur - f.start) / Math.max(1, f.end - f.start);
+    items.push({title: `${mb(f.start)}${f.urgent ? ' · urgent' : ''}${f.attempts ? ` · attempt ${f.attempts + 1}` : ''}`, level: f.urgent ? 'warn' : '',
+      text: `${mb(f.cur - f.start)} of ${mb(f.end - f.start)} · ${f.mbps.toFixed(1)} Mbit/s · ${ago(f.age_ms)}`,
+      extra: `<div class="bar ${f.urgent ? 'urgent' : ''}"><div style="width:${(p*100).toFixed(0)}%"></div></div>`});
+  }
+  return facts(items);
+}
+
+function clientHTML(ss) {
+  if (!ss) return '<span class="muted">No request yet</span>';
+  const items = [{title: ss.client_segment >= 0 ? `Segment ${ss.client_segment} (${clock(ss.client_time)})` : 'No segment requested yet',
+    text: `${ss.client_segment >= 0 ? 'last request ' + ago(ss.client_idle_ms) + ' ago · ' : ''}${ss.served} served, ${mb(ss.served_bytes)}`}];
+  if (ss.slow_sends) items.push({title: 'Slow delivery to the client', level: 'warn',
+    text: `${ss.slow_sends}× a segment took longer to reach the client than it lasts – bottleneck between proxy and client`});
+  for (const r of (ss.recent || []).slice(-10).reverse()) {
+    const tight = r.transfer_ms && r.mbps < r.need_mbps * 1.25, slow = r.wait_ms > 2000;
+    items.push({title: `${time(r.at)} · segment ${r.segment}`, level: slow ? 'error' : tight ? 'warn' : '',
+      text: `waited ${(r.wait_ms/1000).toFixed(1)} s · ` + (r.transfer_ms
+        ? `sent in ${(r.transfer_ms/1000).toFixed(1)} s at ${r.mbps.toFixed(0)} Mbit/s (needs ${r.need_mbps.toFixed(0)})`
+        : r.outcome === 'ok' ? 'sending…' : esc(r.outcome))});
+  }
+  return facts(items);
+}
+
+function directHTML(cs) {
+  const rs = (cs && cs.readers) || [];
+  if (!rs.length) return '<span class="muted">The client is not reading right now</span>';
+  return facts(rs.map(r => ({title: esc(r.name), text: `at ${mb(r.pos)} · ${mb(r.ahead)} ready ahead · ${mb(r.read)} read`})));
+}
+
+function renderEvents() {
+  const list = events.filter(e => filter === 'all' || e.level !== 'info').slice().reverse();
+  $('#events').innerHTML = list.length ? list.map(e => `<li class="${e.level === 'info' ? '' : e.level}">
+      <span class="title">${esc(e.msg)}</span>
+      <span class="text mono">${time(e.time)} · ${esc(e.source)} · ${esc(e.kind)}</span></li>`).join('')
+    : '<li><span class="text">Nothing has happened yet.</span></li>';
+}
+
+poll();
+</script>
+</body>
+</html>
