@@ -380,6 +380,9 @@ func (s *Session) startLocked(k int, reason string) {
 		"run", r.id, "segment", k)
 }
 
+// seekSlack is added to the seek target; it must stay <= -segment_time_delta.
+const seekSlack = 0.05
+
 // headSegs: how many segments from the movie start AVPlay fetches before it
 // jumps to the resume position.
 const headSegs = 3
@@ -410,7 +413,11 @@ func (s *Session) launchLocked(k, end int, reason string) *run {
 	}
 	args := []string{"-hide_banner", "-nostdin", "-loglevel", "warning", "-y"}
 	if k > 0 {
-		args = append(args, "-ss", strconv.FormatFloat(segs[k].Start, 'f', 3, 64))
+		// Seek slightly past the keyframe: older ffmpeg (6.x) subtracts the
+		// audio decoder delay and would otherwise land on the keyframe before,
+		// shifting every cut of this run. Landing up to seekSlack late is
+		// absorbed by -segment_time_delta below.
+		args = append(args, "-ss", strconv.FormatFloat(segs[k].Start+seekSlack, 'f', 3, 64))
 	}
 	args = append(args, s.cfg.InputArgs...)
 	args = append(args, "-i", s.input, "-map", "0:v:0")
