@@ -76,6 +76,7 @@ type Session struct {
 	init        []byte        // fMP4: shared init section
 	run         *run
 	head        *run // short extra run for the movie start when resuming
+	headEnd     int  // segments [0, headEnd) cover the first headSeconds
 	runSeq      int
 	lastReq     int
 	lastReqAt   time.Time
@@ -155,6 +156,9 @@ func New(cfg Config, id, label string, tl *mkv.Timeline, input string, audio Aud
 		created: time.Now(), ready: map[int]int64{}, mediaOff: map[int]int64{}, lastReq: -1, lastReqAt: time.Now(),
 	}
 	s.cond = sync.NewCond(&s.mu)
+	for s.headEnd < len(tl.Segments) && tl.Segments[s.headEnd].Start < headSeconds {
+		s.headEnd++
+	}
 	go s.maintain()
 	return s, nil
 }
@@ -167,7 +171,7 @@ func (s *Session) Prepare(seg int, reason string) {
 	defer s.mu.Unlock()
 	if s.run == nil && !s.closed {
 		s.startLocked(seg, reason)
-		if seg >= headSegs {
+		if seg >= s.headEnd {
 			s.startHeadLocked()
 		}
 	}
@@ -279,7 +283,7 @@ func (s *Session) Segment(ctx context.Context, k int) (File, error) {
 	defer s.mu.Unlock()
 	s.lastReq, s.lastReqAt = k, time.Now()
 	why := "" // why the client has to wait, for the event log
-	headBusy := k < headSegs && s.head != nil && !s.head.exited
+	headBusy := k < s.headEnd && s.head != nil && !s.head.exited
 	if _, ok := s.ready[k]; !ok && !s.closed && s.failed == nil && !headBusy {
 		if reason := s.needRestartLocked(k); reason != "" {
 			s.startLocked(k, reason)
@@ -309,7 +313,7 @@ func (s *Session) Segment(ctx context.Context, k int) (File, error) {
 			}
 			return File{Path: s.segPath(k), Off: s.mediaOff[k], Size: size}, nil
 		}
-		if k < headSegs && s.head != nil && !s.head.exited {
+		if k < s.headEnd && s.head != nil && !s.head.exited {
 			why = "movie start is being produced in parallel"
 		} else if reason := s.needRestartLocked(k); reason != "" {
 			s.startLocked(k, reason)
@@ -385,19 +389,19 @@ func (s *Session) startLocked(k int, reason string) {
 // seekSlack is added to the seek target; it must stay <= -segment_time_delta.
 const seekSlack = 0.05
 
-// headSegs: how many segments from the movie start AVPlay fetches before it
+// headSeconds: how much of the movie start AVPlay fetches before it
 // jumps to the resume position.
-const headSegs = 3
+const headSeconds = 12.0
 
 // startHeadLocked produces the first segments in a second, short ffmpeg run
 // when resuming. Without it, the client's request for segment 0 would kill the
 // prepared run at the resume position – and a second later the client would need
 // it after all (measured: 9 s of waiting).
 func (s *Session) startHeadLocked() {
-	if s.head != nil || len(s.tl.Segments) <= headSegs {
+	if s.head != nil || len(s.tl.Segments) <= s.headEnd {
 		return
 	}
-	s.head = s.launchLocked(0, headSegs, "movie start for the client's entry")
+	s.head = s.launchLocked(0, s.headEnd, "movie start for the client's entry")
 }
 
 // launchLocked starts ffmpeg for segments [k, end) and watches it.

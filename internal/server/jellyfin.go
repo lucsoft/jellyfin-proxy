@@ -441,7 +441,14 @@ func queryCI(r *http.Request, key string) string {
 // back as "Encode" (burn into the video), which Direct Play and the
 // copying HLS path cannot do – this makes that visible instead of silent.
 func (s *Server) logSubtitles(src *Source, ms map[string]any, pr *playbackRequest) {
+	profiles := strings.Join(pr.SubProfs, ", ")
 	if pr.Subtitle == nil || *pr.Subtitle < 0 {
+		what := "no subtitle choice (the client handles subtitles itself)"
+		if pr.Subtitle != nil {
+			what = "subtitles off"
+		}
+		s.ev.Emit(short(src.ID), "subtitle", events.Info,
+			fmt.Sprintf("PlaybackInfo: %s; client can show: %s", what, orNone(profiles)))
 		return
 	}
 	streams, _ := ms["MediaStreams"].([]any)
@@ -462,7 +469,7 @@ func (s *Server) logSubtitles(src *Source, ms map[string]any, pr *playbackReques
 			level = events.Warn
 			msg += " – it would have to be burned into the video, which this proxy does not do, so the client shows nothing"
 		}
-		s.ev.Emit(short(src.ID), "subtitle", level, msg, "client_profiles", strings.Join(pr.SubProfs, ", "))
+		s.ev.Emit(short(src.ID), "subtitle", level, msg+"; client can show: "+orNone(profiles))
 	}
 }
 
@@ -521,4 +528,11 @@ func (s *Server) addRDRTracks(ms map[string]any) {
 		out = append(out, v)
 	}
 	ms["MediaStreams"] = out
+}
+
+func orNone(s string) string {
+	if s == "" {
+		return "nothing declared"
+	}
+	return s
 }

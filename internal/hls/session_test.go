@@ -177,7 +177,7 @@ func TestResumeSurvivesHeadRequests(t *testing.T) {
 	s, tl, ev := newTestSession(t, Config{MaxAhead: 50, KeepBehind: 50, SeekGap: 1})
 	resume := len(tl.Segments) - 3
 	s.Prepare(resume, "resume")
-	for k := 0; k < headSegs; k++ {
+	for k := 0; k < s.headEnd; k++ {
 		get(t, s, k)
 	}
 	get(t, s, resume)
