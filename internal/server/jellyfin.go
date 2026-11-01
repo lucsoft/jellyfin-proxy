@@ -138,6 +138,10 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request, item
 				pr.StartSec = float64(*b.StartTimeTicks) / 1e7
 			}
 		}
+		// Jellyfin does not know the virtual tracks; ask it for the real one.
+		body = realAudioIndex(body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
 	}
 	if v := queryCI(r, "SubtitleStreamIndex"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -147,6 +151,15 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request, item
 	if v := queryCI(r, "AudioStreamIndex"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			pr.Audio = &n
+			if real, rdr := splitAudio(n); rdr {
+				q := r.URL.Query()
+				for k := range q {
+					if strings.EqualFold(k, "AudioStreamIndex") {
+						q.Set(k, strconv.Itoa(real))
+					}
+				}
+				r.URL.RawQuery = q.Encode()
+			}
 		}
 	}
 	if v := queryCI(r, "StartTimeTicks"); v != "" {
@@ -182,6 +195,10 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 		if pr.Audio != nil && (pr.SourceID == "" || pr.SourceID == src.ID) {
 			audio = *pr.Audio
 		}
+		if s.opt.RDR {
+			s.addRDRTracks(ms)
+		}
+		ms["DefaultAudioStreamIndex"] = audio // the client's choice, virtual tracks included
 
 		src.Audio = audio
 		src.Mode = "hls"
@@ -338,6 +355,7 @@ func (s *Server) observeReport(r *http.Request) {
 		return
 	}
 	body, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	body = realAudioIndex(body)
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	var rep struct {
@@ -445,4 +463,61 @@ func (s *Server) logSubtitles(src *Source, ms map[string]any, pr *playbackReques
 		}
 		s.ev.Emit(short(src.ID), "subtitle", level, msg, "client_profiles", strings.Join(pr.SubProfs, ", "))
 	}
+}
+
+// realAudioIndex replaces a virtual AudioStreamIndex (see rdrBase) in a JSON
+// body with the real one before the request goes to Jellyfin.
+func realAudioIndex(body []byte) []byte {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	v, ok := m["AudioStreamIndex"].(float64)
+	if !ok {
+		return body
+	}
+	real, rdr := splitAudio(int(v))
+	if !rdr {
+		return body
+	}
+	m["AudioStreamIndex"] = real
+	if b, err := json.Marshal(m); err == nil {
+		return b
+	}
+	return body
+}
+
+// addRDRTracks lists a "reduced dynamic range" variant right after every
+// audio track, so clients offer it in their normal audio menu.
+func (s *Server) addRDRTracks(ms map[string]any) {
+	streams, _ := ms["MediaStreams"].([]any)
+	var out []any
+	for _, x := range streams {
+		out = append(out, x)
+		m, _ := x.(map[string]any)
+		if m == nil || m["Type"] != "Audio" {
+			continue
+		}
+		idx, ok := m["Index"].(float64)
+		if !ok || int(idx) >= rdrBase {
+			continue
+		}
+		v := make(map[string]any, len(m))
+		for k, val := range m {
+			v[k] = val
+		}
+		title, _ := m["DisplayTitle"].(string)
+		v["Index"] = rdrBase + int(idx)
+		v["DisplayTitle"] = title + " · Reduced dynamic range"
+		v["Title"] = v["DisplayTitle"]
+		v["Codec"] = s.opt.AudioCodec
+		v["IsDefault"] = false
+		if ch, ok := m["Channels"].(float64); !ok || int(ch) > s.opt.AudioChannels {
+			v["Channels"] = s.opt.AudioChannels
+		}
+		delete(v, "Profile")
+		delete(v, "BitRate")
+		out = append(out, v)
+	}
+	ms["MediaStreams"] = out
 }

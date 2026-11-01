@@ -47,10 +47,13 @@ func main() {
 		keepBehind = flag.Int("segbehind", 15, "segments kept behind the client (for short rewinds)")
 		seekGap    = flag.Int("seekgap", 6, "if the client jumps further ahead than this, ffmpeg is restarted there")
 
-		acodec     = flag.String("acodec", "ac3", "target audio codec")
-		abitrate   = flag.String("abitrate", "640k", "audio bitrate")
-		achannels  = flag.Int("achannels", 6, "audio channels")
-		hlsFormat  = flag.String("hlsformat", "fmp4", "HLS segment format: fmp4 or ts")
+		acodec    = flag.String("acodec", "ac3", "target audio codec")
+		abitrate  = flag.String("abitrate", "640k", "audio bitrate")
+		achannels = flag.Int("achannels", 6, "audio channels")
+		hlsFormat = flag.String("hlsformat", "fmp4", "HLS segment format: fmp4 or ts")
+		rdr       = flag.Bool("rdr", true, "offer a reduced-dynamic-range variant of every audio track (played via HLS)")
+		rdrFilter = flag.String("rdrfilter", server.DefaultRDRFilter,
+			"ffmpeg audio filter for the reduced-dynamic-range tracks")
 		directPlay = flag.Bool("directplay", true, "play MKV with a client-compatible audio track straight from the cache instead of HLS")
 		copyAudio  = flag.String("copyaudio", "ac3,eac3,aac", "audio codecs the client supports (copied instead of encoded)")
 
@@ -129,6 +132,8 @@ func main() {
 		AudioCodec: *acodec, AudioBitrate: *abitrate, AudioChannels: *achannels,
 		CopyAudio:      strings.Split(*copyAudio, ","),
 		DirectPlay:     *directPlay,
+		RDR:            *rdr,
+		RDRFilter:      *rdrFilter,
 		SegmentSeconds: *segSec,
 		SessionIdle:    30 * time.Minute,
 		CacheIdle:      15 * time.Minute,

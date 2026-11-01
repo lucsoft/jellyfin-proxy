@@ -32,6 +32,8 @@ type Options struct {
 	AudioChannels  int
 	CopyAudio      []string // codecs the client handles natively (copied as-is)
 	DirectPlay     bool     // play MKV with client-compatible audio straight from the cache instead of HLS
+	RDR            bool     // offer a "reduced dynamic range" variant of every audio track
+	RDRFilter      string   // ffmpeg filter for those variants
 	SegmentSeconds float64
 	SessionIdle    time.Duration // close the session entirely
 	CacheIdle      time.Duration // drop the cache once no session reads it anymore
@@ -213,7 +215,7 @@ func (s *Server) sessionFor(src *Source, audio int, startSec float64) (*hls.Sess
 	}
 	s.mu.Unlock()
 	if sess != nil {
-		if sess.Audio().Index == audio {
+		if sess.Audio().ID == audio {
 			return sess, nil
 		}
 		old := sess.Audio().Label
@@ -280,6 +282,25 @@ func (s *Server) directOK(src *Source, audio int) bool {
 	return s.opt.DirectPlay && s.audioFor(src, audio).Copy
 }
 
+// DefaultRDRFilter compresses the dynamic range: quiet passages come up by
+// roughly 15 dB, loud ones go slightly down, and the limiter keeps peaks
+// below -1 dBFS. Measured on a test signal: 29.5 dB -> 11.4 dB range.
+const DefaultRDRFilter = "acompressor=threshold=0.01:ratio=8:attack=5:release=300:makeup=6:knee=6:link=average:detection=rms," +
+	"alimiter=limit=0.89:level=false"
+
+// rdrBase offsets the virtual "reduced dynamic range" tracks: track 1002 is
+// track 2 run through the compressor. Real Jellyfin indexes stay far below.
+const rdrBase = 1000
+
+// splitAudio maps a client-side audio index to the real stream index and
+// whether the compressor applies.
+func splitAudio(index int) (real int, rdr bool) {
+	if index >= rdrBase {
+		return index - rdrBase, true
+	}
+	return index, false
+}
+
 // prepareDirect sets up cache and index for Direct Play and ends any HLS
 // session of the same source that may still be running.
 func (s *Server) prepareDirect(src *Source) {
@@ -315,8 +336,9 @@ func (src *Source) videoCodec() string {
 }
 
 // audioFor picks the audio track and target codec. client-compatible tracks are copied.
-func (s *Server) audioFor(src *Source, index int) hls.Audio {
-	a := hls.Audio{Index: index, Codec: s.opt.AudioCodec, Bitrate: s.opt.AudioBitrate, Channels: s.opt.AudioChannels}
+func (s *Server) audioFor(src *Source, id int) hls.Audio {
+	index, rdr := splitAudio(id)
+	a := hls.Audio{ID: id, Index: index, Codec: s.opt.AudioCodec, Bitrate: s.opt.AudioBitrate, Channels: s.opt.AudioChannels}
 	for _, st := range src.Streams {
 		if st.Index != index || st.Type != "Audio" {
 			continue
@@ -325,6 +347,12 @@ func (s *Server) audioFor(src *Source, index int) hls.Audio {
 			if strings.EqualFold(st.Codec, ok) {
 				a.Copy = true
 			}
+		}
+		if rdr {
+			// The compressor changes the audio, so it is always re-encoded.
+			a.Copy, a.Filter = false, s.opt.RDRFilter
+			a.Label = fmt.Sprintf("#%d %s, reduced dynamic range -> %s %dch", index, st.Title, a.Codec, a.Channels)
+			return a
 		}
 		if a.Copy {
 			a.Label = fmt.Sprintf("#%d %s (copied)", index, st.Title)

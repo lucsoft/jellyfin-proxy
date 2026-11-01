@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ func fakeJellyfin(t *testing.T, file string) *httptest.Server {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /Items/{item}/PlaybackInfo", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		lastPlaybackBody.Store(string(b))
 		if !strings.Contains(r.Header.Get("Authorization"), `Token="secret"`) {
 			http.Error(w, "auth", 401)
 			return
@@ -60,6 +63,8 @@ func fakeJellyfin(t *testing.T, file string) *httptest.Server {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+var lastPlaybackBody atomic.Value // body of the last PlaybackInfo Jellyfin received
 
 func newTestServer(t *testing.T, file string, directPlay bool) (*Server, *httptest.Server, *events.Log) {
 	t.Helper()
@@ -288,5 +293,67 @@ func TestConcurrentCacheForOpensOneCache(t *testing.T) {
 		if c := <-got; c != first {
 			t.Fatal("two different caches for the same source")
 		}
+	}
+}
+
+// Every audio track gets a "reduced dynamic range" twin. Picking it sends the
+// real index to Jellyfin, switches to HLS and runs the compressor.
+func TestReducedDynamicRangeTrack(t *testing.T) {
+	file := testmedia.MKV(t)
+	srv, tv, _ := newTestServer(t, file, true)
+	srv.opt.RDR, srv.opt.RDRFilter = true, DefaultRDRFilter
+
+	req, _ := http.NewRequest("POST", tv.URL+"/Items/item1/PlaybackInfo",
+		strings.NewReader(`{"AudioStreamIndex":1002,"MediaSourceId":"src1"}`))
+	req.Header.Set("Authorization", `MediaBrowser Token="secret"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pi struct{ MediaSources []map[string]any }
+	json.NewDecoder(resp.Body).Decode(&pi)
+	resp.Body.Close()
+
+	if got, _ := lastPlaybackBody.Load().(string); !strings.Contains(got, `"AudioStreamIndex":2`) {
+		t.Fatalf("Jellyfin got %s, want the real index 2", got)
+	}
+	ms := pi.MediaSources[0]
+	found := false
+	for _, x := range ms["MediaStreams"].([]any) {
+		m := x.(map[string]any)
+		if m["Index"] == float64(1002) && strings.Contains(m["DisplayTitle"].(string), "Reduced dynamic range") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no virtual track 1002 in MediaStreams")
+	}
+	tu, _ := ms["TranscodingUrl"].(string)
+	if ms["SupportsDirectPlay"] != false || !strings.Contains(tu, "audio=1002") {
+		t.Fatalf("expected HLS with audio=1002, got direct=%v url=%q", ms["SupportsDirectPlay"], tu)
+	}
+
+	// The playlist and the first segment come out of ffmpeg with the filter.
+	body := getBody(t, tv.URL+tu)
+	var seg, init string
+	for _, l := range strings.Split(body, "\n") {
+		if seg == "" && strings.HasPrefix(l, "/proxy/hls/") {
+			seg = l
+		}
+		if u, ok := strings.CutPrefix(l, `#EXT-X-MAP:URI="`); ok {
+			init = getBody(t, tv.URL+strings.TrimSuffix(u, `"`))
+		}
+	}
+	path := t.TempDir() + "/s.mp4"
+	os.WriteFile(path, []byte(init+getBody(t, tv.URL+seg)), 0o644)
+	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "ac3") {
+		t.Fatalf("segment broken: %v %s", err, out)
+	}
+	srv.mu.Lock()
+	sess := srv.sessions["src1"]
+	srv.mu.Unlock()
+	if a := sess.Audio(); a.Filter != DefaultRDRFilter || a.Index != 2 || a.Copy {
+		t.Fatalf("session audio %+v", a)
 	}
 }

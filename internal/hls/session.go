@@ -45,8 +45,10 @@ type Config struct {
 // Audio describes the audio track. Index is the global stream index in the
 // source (MediaStream.Index in Jellyfin), -1 = first audio track.
 type Audio struct {
-	Index    int
-	Copy     bool // track is already client-compatible and is only copied
+	ID       int    // index as the client knows it (may be a virtual track)
+	Index    int    // real stream index in the source
+	Copy     bool   // track is already client-compatible and is only copied
+	Filter   string // ffmpeg audio filter, e.g. the dynamic range compressor
 	Codec    string
 	Bitrate  string
 	Channels int
@@ -430,6 +432,9 @@ func (s *Session) launchLocked(k, end int, reason string) *run {
 	if s.audio.Copy {
 		args = append(args, "-c:a", "copy")
 	} else {
+		if s.audio.Filter != "" {
+			args = append(args, "-af", s.audio.Filter)
+		}
 		args = append(args, "-c:a", s.audio.Codec, "-b:a", s.audio.Bitrate, "-ac", strconv.Itoa(s.audio.Channels))
 	}
 	// -copyts: timestamps stay absolute so that segments from different runs
