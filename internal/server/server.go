@@ -48,6 +48,8 @@ type Server struct {
 	locks  sync.Map // sourceID -> *sync.Mutex
 	tokens tokenCache
 
+	cacheLocks sync.Map // sourceID -> *sync.Mutex, see cacheFor
+
 	mu        sync.Mutex
 	sources   map[string]*Source
 	caches    map[string]*rangecache.Cache
@@ -161,6 +163,15 @@ func (s *Server) source(id string) *Source {
 // cacheFor returns the cache of a source, creating it if needed.
 // A cache with a permanent error (e.g. an expired token) is replaced.
 func (s *Server) cacheFor(ctx context.Context, src *Source) (*rangecache.Cache, error) {
+	// One cache per source: the background preparation and the first media
+	// request often arrive together. Without this lock both would open a
+	// cache, and the second would push out the first (e.g. a restored one).
+	// Separate from lockFor, which sessionFor already holds when it gets here.
+	v, _ := s.cacheLocks.LoadOrStore(src.ID, &sync.Mutex{})
+	l := v.(*sync.Mutex)
+	l.Lock()
+	defer l.Unlock()
+
 	s.mu.Lock()
 	c := s.caches[src.ID]
 	s.mu.Unlock()

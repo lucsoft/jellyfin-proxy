@@ -264,3 +264,29 @@ func TestStreamsRequireValidToken(t *testing.T) {
 		t.Errorf("token checked against Jellyfin: HTTP %d, want 200", got)
 	}
 }
+
+// The background preparation and the first media request ask for the cache
+// at the same time; they must end up with one and the same cache.
+func TestConcurrentCacheForOpensOneCache(t *testing.T) {
+	file := testmedia.MKV(t)
+	srv, _, _ := newTestServer(t, file, true)
+	jf := fakeJellyfin(t, file)
+	srv.opt.Upstream, _ = url.Parse(jf.URL)
+	src := &Source{ID: "src1", ItemID: "item1", token: "secret"}
+	got := make(chan *rangecache.Cache, 8)
+	for i := 0; i < cap(got); i++ {
+		go func() {
+			c, err := srv.cacheFor(t.Context(), src)
+			if err != nil {
+				t.Error(err)
+			}
+			got <- c
+		}()
+	}
+	first := <-got
+	for i := 1; i < cap(got); i++ {
+		if c := <-got; c != first {
+			t.Fatal("two different caches for the same source")
+		}
+	}
+}

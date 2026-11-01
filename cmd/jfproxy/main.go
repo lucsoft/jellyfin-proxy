@@ -174,11 +174,26 @@ func main() {
 func logRequests(l *slog.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t0 := time.Now()
-		next.ServeHTTP(w, r)
-		l.Info(r.Method+" "+r.URL.Path, "ms", time.Since(t0).Milliseconds(),
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		l.Info(r.Method+" "+r.URL.Path, "status", sw.status, "ms", time.Since(t0).Milliseconds(),
 			"range", r.Header.Get("Range"), "from", r.RemoteAddr, "ua", r.UserAgent())
 	})
 }
+
+// statusWriter remembers the response status for the request log. Unwrap
+// keeps http.ResponseController (flushing, deadlines) working through it.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // lanIP determines the address this machine uses to reach the network.
 func lanIP() string {

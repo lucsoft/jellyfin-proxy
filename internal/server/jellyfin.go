@@ -28,6 +28,8 @@ type playbackRequest struct {
 	Audio    *int
 	StartSec float64
 	Token    string
+	Subtitle *int     // SubtitleStreamIndex the client asked for (-1 = off)
+	SubProfs []string // how the client can show subtitles, e.g. "pgssub:Encode"
 }
 
 // Handler returns the public handler (Client and dashboard).
@@ -119,15 +121,27 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request, item
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
 		var b struct {
-			AudioStreamIndex *int
-			StartTimeTicks   *int64
-			MediaSourceId    string
+			AudioStreamIndex    *int
+			SubtitleStreamIndex *int
+			StartTimeTicks      *int64
+			MediaSourceId       string
+			DeviceProfile       struct {
+				SubtitleProfiles []struct{ Format, Method string }
+			}
 		}
 		if json.Unmarshal(body, &b) == nil {
-			pr.Audio, pr.SourceID = b.AudioStreamIndex, b.MediaSourceId
+			pr.Audio, pr.SourceID, pr.Subtitle = b.AudioStreamIndex, b.MediaSourceId, b.SubtitleStreamIndex
+			for _, sp := range b.DeviceProfile.SubtitleProfiles {
+				pr.SubProfs = append(pr.SubProfs, sp.Format+":"+sp.Method)
+			}
 			if b.StartTimeTicks != nil {
 				pr.StartSec = float64(*b.StartTimeTicks) / 1e7
 			}
+		}
+	}
+	if v := queryCI(r, "SubtitleStreamIndex"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			pr.Subtitle = &n
 		}
 	}
 	if v := queryCI(r, "AudioStreamIndex"); v != "" {
@@ -185,6 +199,7 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 		s.mu.Unlock()
 
 		a := s.audioFor(src, audio)
+		s.logSubtitles(src, ms, pr)
 		if src.Mode == "direct" {
 			// Direct Play stays allowed; the client fetches /Videos/{id}/stream, and
 			// the proxy serves that from the cache. Report the requested audio
@@ -400,4 +415,34 @@ func queryCI(r *http.Request, key string) string {
 		}
 	}
 	return ""
+}
+
+// logSubtitles records what the client asked for and how Jellyfin wants to
+// deliver the chosen subtitle track. Image subtitles (PGS) usually come
+// back as "Encode" (burn into the video), which Direct Play and the
+// copying HLS path cannot do – this makes that visible instead of silent.
+func (s *Server) logSubtitles(src *Source, ms map[string]any, pr *playbackRequest) {
+	if pr.Subtitle == nil || *pr.Subtitle < 0 {
+		return
+	}
+	streams, _ := ms["MediaStreams"].([]any)
+	for _, x := range streams {
+		m, _ := x.(map[string]any)
+		if m == nil || m["Type"] != "Subtitle" {
+			continue
+		}
+		if idx, _ := m["Index"].(float64); int(idx) != *pr.Subtitle {
+			continue
+		}
+		codec, _ := m["Codec"].(string)
+		method, _ := m["DeliveryMethod"].(string)
+		title, _ := m["DisplayTitle"].(string)
+		level := events.Info
+		msg := fmt.Sprintf("Subtitle #%d %s (%s): Jellyfin delivers it as %q", *pr.Subtitle, title, codec, method)
+		if method == "Encode" {
+			level = events.Warn
+			msg += " – it would have to be burned into the video, which this proxy does not do, so the client shows nothing"
+		}
+		s.ev.Emit(short(src.ID), "subtitle", level, msg, "client_profiles", strings.Join(pr.SubProfs, ", "))
+	}
 }
