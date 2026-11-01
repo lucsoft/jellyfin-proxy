@@ -93,3 +93,14 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	http.Error(w, "a valid Jellyfin token is required (api_key or Authorization header)", http.StatusUnauthorized)
 	return false
 }
+
+// adoptToken gives a source without a token (e.g. taken over from the
+// previous process) the already validated token of the current request, so
+// the cache can download from Jellyfin.
+func (s *Server) adoptToken(src *Source, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if src.token == "" {
+		src.token = tokenFrom(r)
+	}
+}

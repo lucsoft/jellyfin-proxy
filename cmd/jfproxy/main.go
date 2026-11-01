@@ -59,8 +59,19 @@ func main() {
 
 		eventsFile = flag.String("events", "", "also write events as JSONL to this file")
 		verbose    = flag.Bool("v", false, "log every proxy request")
+		upgrade    = flag.Bool("upgrade", false, "ask the running proxy (same -dir) to hand over to this binary without dropping streams, then exit")
 	)
 	flag.Parse()
+	if *upgrade {
+		if err := requestUpgrade(*workDir); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	// A successor may outlive the pipe its predecessor's stdout went to;
+	// without this, the first log line after that would kill it.
+	signal.Ignore(syscall.SIGPIPE)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	if *upstream == "" {
@@ -81,10 +92,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// Only one proxy per working directory. A successor waits until its
-	// predecessor is done – otherwise it would clean up the predecessor's
-	// cache while that one is still saving it for the next start.
-	if err := lockWorkDir(*workDir, 30*time.Second); err != nil {
+	// Only one proxy per working directory. A new start waits until the old
+	// one is done – otherwise it would clean up the old one's cache while that
+	// one is still saving it. A graceful successor inherits the lock instead.
+	lock, err := takeLock(*workDir)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -120,6 +132,8 @@ func main() {
 
 	srv := server.New(server.Options{
 		Upstream: up, PublicURL: strings.TrimRight(*public, "/"), ServerName: *serverName, WorkDir: *workDir,
+		// The predecessor is still finishing streams from its directories.
+		SkipCleanup: isSuccessor(),
 		Cache: rangecache.Config{
 			Dir: *workDir, BlockSize: int64(*blockMiB) << 20, Workers: *workers, Reserve: *reserve,
 			ReadAhead: int64(*aheadMiB) << 20, KeepBehind: int64(*behindMiB) << 20,
@@ -150,29 +164,56 @@ func main() {
 	}
 	srv.SetLocalAddr(loop.Addr().String())
 	go http.Serve(loop, srv.LocalHandler())
+	if isSuccessor() {
+		srv.ImportSources(sourcesFile(*workDir))
+	}
 
 	var h http.Handler = srv.Handler()
 	if *verbose {
 		h = logRequests(logger, h)
 	}
 	httpSrv := &http.Server{Addr: *listen, Handler: h, ReadHeaderTimeout: 20 * time.Second}
+	ln, err := openListener(*listen)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
+	// Serve returns as soon as Shutdown starts; stopped is closed only once
+	// Shutdown has finished the open connections.
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		logger.Info("shutting down …")
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		httpSrv.Shutdown(ctx)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+		for s := range sig {
+			if s == syscall.SIGHUP {
+				// Hand over to the (possibly rebuilt) binary; on failure keep serving.
+				if err := handOver(ln, lock, srv, *workDir, logger); err != nil {
+					ev.Emit("proxy", "upgrade_failed", events.Error, "Graceful upgrade failed, keeping this process: "+err.Error())
+					continue
+				}
+				ev.Emit("proxy", "upgrade", events.Info, "Handed over to a new process; this one finishes its open streams and exits")
+				drain(httpSrv, srv)
+				return
+			}
+			logger.Info("shutting down …")
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			httpSrv.Shutdown(ctx)
+			cancel()
+			return
+		}
 	}()
 
+	writePID(*workDir)
+	signalReady()
 	logger.Info("jellyfin-proxy running", "upstream", up.String(), "listen", *listen, "public", *public,
-		"dashboard", *public+"/", "workdir", *workDir)
-	if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		"dashboard", *public+"/", "workdir", *workDir, "pid", os.Getpid(), "successor", isSuccessor())
+	if err := httpSrv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		logger.Error(err.Error())
 		os.Exit(1)
 	}
+	<-stopped
 	srv.Shutdown()
 }
 
@@ -211,19 +252,19 @@ func lanIP() string {
 }
 
 // lockWorkDir holds an exclusive lock on dir/.lock until the process exits.
-func lockWorkDir(dir string, wait time.Duration) error {
+func lockWorkDir(dir string, wait time.Duration) (*os.File, error) {
 	f, err := os.OpenFile(filepath.Join(dir, ".lock"), os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	deadline := time.Now().Add(wait)
 	for {
 		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
 		if err == nil {
-			return nil // f stays open, the lock holds until exit
+			return f, nil // f stays open, the lock holds until exit
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("working directory %s is still held by another jfproxy after %s", dir, wait)
+			return nil, fmt.Errorf("working directory %s is still held by another jfproxy after %s", dir, wait)
 		}
 		time.Sleep(200 * time.Millisecond)
 	}

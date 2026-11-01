@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httputil"
@@ -34,6 +35,7 @@ type Options struct {
 	DirectPlay     bool     // play MKV with client-compatible audio straight from the cache instead of HLS
 	RDR            bool     // offer a "reduced dynamic range" variant of every audio track
 	RDRFilter      string   // ffmpeg filter for those variants
+	SkipCleanup    bool     // graceful successor: the predecessor still uses its directories
 	SegmentSeconds float64
 	SessionIdle    time.Duration // close the session entirely
 	CacheIdle      time.Duration // drop the cache once no session reads it anymore
@@ -100,7 +102,9 @@ func New(opt Options) *Server {
 		stopTimer: map[string]*time.Timer{},
 	}
 	s.rp = s.newReverseProxy()
-	s.cleanWorkDir()
+	if !opt.SkipCleanup {
+		s.cleanWorkDir()
+	}
 	go s.maintain()
 	return s
 }
@@ -440,4 +444,70 @@ func (s *Server) Shutdown() {
 func clock(sec float64) string {
 	t := int(sec)
 	return fmt.Sprintf("%d:%02d:%02d", t/3600, t/60%60, t%60)
+}
+
+// ---------------------------------------------------------------- graceful upgrade
+
+// ExportSources writes what the proxy knows about the sources (no tokens) so
+// a successor recognises the client's next requests – a seek during Direct
+// Play is a new request and lands on the successor.
+func (s *Server) ExportSources(path string) error {
+	s.mu.Lock()
+	list := make([]Source, 0, len(s.sources))
+	for _, src := range s.sources {
+		list = append(list, *src)
+	}
+	s.mu.Unlock()
+	b, err := json.Marshal(list)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
+}
+
+// ImportSources loads (and removes) the list written by ExportSources. Tokens
+// are not part of it; they come with the client's next request.
+func (s *Server) ImportSources(path string) {
+	b, err := os.ReadFile(path)
+	os.Remove(path)
+	if err != nil {
+		return
+	}
+	var list []Source
+	if json.Unmarshal(b, &list) != nil {
+		return
+	}
+	s.mu.Lock()
+	for i := range list {
+		src := list[i]
+		s.sources[src.ID] = &src
+	}
+	s.mu.Unlock()
+	s.ev.Emit("proxy", "upgrade", events.Info,
+		fmt.Sprintf("Took over from the previous process: %d known sources", len(list)))
+}
+
+// PrepareDrain runs in the old process right after the hand-over. HLS
+// sessions end (the client's next segment request goes to the successor,
+// which restarts ffmpeg there), and caches nobody reads are saved so the
+// successor can restore them. Caches still feeding an open stream stay
+// until that stream ends.
+func (s *Server) PrepareDrain() {
+	s.mu.Lock()
+	sessions := s.sessions
+	s.sessions = map[string]*hls.Session{}
+	var idle []*rangecache.Cache
+	for id, c := range s.caches {
+		if c.Idle() > 0 {
+			idle = append(idle, c)
+			delete(s.caches, id)
+		}
+	}
+	s.mu.Unlock()
+	for _, sess := range sessions {
+		sess.Close("handed over to the new process")
+	}
+	for _, c := range idle {
+		c.Save("handed over to the new process")
+	}
 }

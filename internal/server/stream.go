@@ -32,6 +32,7 @@ func (s *Server) handleHLS(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown MediaSource – fetch PlaybackInfo first", http.StatusNotFound)
 		return
 	}
+	s.adoptToken(src, r)
 	audio := src.DefaultAudio
 	if v, err := strconv.Atoi(queryCI(r, "audio")); err == nil {
 		audio = v

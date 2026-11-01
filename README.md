@@ -61,6 +61,22 @@ Point the Jellyfin client at the proxy (`http://<proxy-host>:4070`) instead of t
 - **Playback state** with the reason ffmpeg last started, running server requests and every client request with wait and transfer time
 - **Events**: restarts, seeks, released data and errors, each with its reason
 
+## Upgrading without dropping streams
+
+Rebuild the binary in place and ask the running proxy to hand over to it:
+
+```bash
+go build -o bin/jfproxy ./cmd/jfproxy
+```
+
+```bash
+./bin/jfproxy -upgrade -dir <same -dir as the running proxy>
+```
+
+`-upgrade` sends `SIGHUP` to the running proxy (its pid is in `<dir>/jfproxy.pid`). It starts the new binary with the same flags, passes on the listening socket, the work dir lock and the list of known sources, and stops accepting connections. The new process serves every new request right away; the old one finishes the streams that are still open – a Direct Play stream is one long response the client would not reopen – and then exits. If the new binary fails to start, the old process keeps serving.
+
+A plain stop (`SIGTERM`/`SIGINT`) still ends open streams after a few seconds.
+
 ## Security
 
 - **Media access needs a Jellyfin token.** Stream, segment and init requests are only served with a token (`api_key` or the `Authorization` header) that Jellyfin accepts. The proxy checks unknown tokens against `/Users/Me` and caches the result for a few minutes.

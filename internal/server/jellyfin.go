@@ -337,6 +337,7 @@ func (s *Server) handleVideoStream(w http.ResponseWriter, r *http.Request) bool 
 	if !s.requireAuth(w, r) {
 		return true
 	}
+	s.adoptToken(src, r)
 	if s.directOK(src, audio) {
 		s.serveDirect(w, r, src)
 		return true
