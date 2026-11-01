@@ -26,8 +26,8 @@ import (
 	"syscall"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/mkv"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/mkv"
 )
 
 type Config struct {

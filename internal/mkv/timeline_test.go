@@ -5,7 +5,7 @@ import (
 	"os"
 	"testing"
 
-	"jellyfin-proxy/internal/testmedia"
+	"github.com/lucsoft/jellyfin-proxy/internal/testmedia"
 )
 
 func TestTimelineMatchesFFprobeKeyframes(t *testing.T) {

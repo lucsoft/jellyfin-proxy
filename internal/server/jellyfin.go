@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
 )
 
 type ctxKey int
@@ -80,6 +80,9 @@ func isSystemInfo(r *http.Request) bool {
 
 func (s *Server) modifyResponse(resp *http.Response) error {
 	pr, _ := resp.Request.Context().Value(playbackInfoKey).(*playbackRequest)
+	if pr != nil && resp.StatusCode == http.StatusOK {
+		s.rememberToken(pr.Token) // Jellyfin just accepted this token
+	}
 	info := isSystemInfo(resp.Request) && s.opt.ServerName != ""
 	if (pr == nil && !info) || resp.StatusCode != http.StatusOK ||
 		!strings.Contains(resp.Header.Get("Content-Type"), "json") {
@@ -298,6 +301,9 @@ func (s *Server) handleVideoStream(w http.ResponseWriter, r *http.Request) bool 
 	audio := src.Audio
 	if v, err := strconv.Atoi(queryCI(r, "AudioStreamIndex")); err == nil {
 		audio = v
+	}
+	if !s.requireAuth(w, r) {
+		return true
 	}
 	if s.directOK(src, audio) {
 		s.serveDirect(w, r, src)

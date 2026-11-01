@@ -24,7 +24,7 @@ import (
 	"sync"
 	"time"
 
-	"jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
 )
 
 type Config struct {

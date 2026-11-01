@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/hls"
-	"jellyfin-proxy/internal/rangecache"
-	"jellyfin-proxy/internal/testmedia"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/hls"
+	"github.com/lucsoft/jellyfin-proxy/internal/rangecache"
+	"github.com/lucsoft/jellyfin-proxy/internal/testmedia"
 )
 
 // fakeJellyfin plays the server: PlaybackInfo and a file that supports ranges.
@@ -45,6 +45,13 @@ func fakeJellyfin(t *testing.T, file string) *httptest.Server {
 			return
 		}
 		http.ServeContent(w, r, "f.mkv", time.Time{}, strings.NewReader(string(data)))
+	})
+	mux.HandleFunc("GET /Users/Me", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Emby-Token") != "secret" {
+			http.Error(w, "auth", 401)
+			return
+		}
+		w.Write([]byte(`{"Name":"test"}`))
 	})
 	mux.HandleFunc("POST /Sessions/Playing/Progress", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(204) })
 	ts := httptest.NewServer(mux)
@@ -197,5 +204,63 @@ func TestDirectPlayFromCache(t *testing.T) {
 	rr.Body.Close()
 	if rr.StatusCode != 206 || string(part) != string(data[1000:2000]) {
 		t.Fatalf("Range: HTTP %d, %d bytes", rr.StatusCode, len(part))
+	}
+}
+
+// Media from the cache is only served with a token Jellyfin accepts – also
+// for sources that are already cached, and also for tokens the proxy has
+// never seen in a PlaybackInfo request.
+func TestStreamsRequireValidToken(t *testing.T) {
+	file := testmedia.MKV(t)
+	srv, tv, _ := newTestServer(t, file, true)
+
+	req, _ := http.NewRequest("POST", tv.URL+"/Items/item1/PlaybackInfo",
+		strings.NewReader(`{"AudioStreamIndex":2,"MediaSourceId":"src1"}`))
+	req.Header.Set("Authorization", `MediaBrowser Token="secret"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	status := func(u string, hdr map[string]string) int {
+		rq, _ := http.NewRequest("GET", tv.URL+u, nil)
+		for k, v := range hdr {
+			rq.Header.Set(k, v)
+		}
+		rs, err := http.DefaultClient.Do(rq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, rs.Body)
+		rs.Body.Close()
+		return rs.StatusCode
+	}
+	direct := "/Videos/item1/stream?static=true&MediaSourceId=src1"
+	hls := "/proxy/hls/src1/master.m3u8?audio=1&item=item1"
+	for _, c := range []struct {
+		name string
+		url  string
+		hdr  map[string]string
+		want int
+	}{
+		{"direct without token", direct, nil, 401},
+		{"direct with wrong token", direct + "&api_key=nope", nil, 401},
+		{"hls without token", hls, nil, 401},
+		{"hls with wrong header token", hls, map[string]string{"X-Emby-Token": "nope"}, 401},
+		{"direct with token", direct + "&api_key=secret", nil, 200},
+		{"hls with header token", hls, map[string]string{"Authorization": `MediaBrowser Token="secret"`}, 200},
+	} {
+		if got := status(c.url, c.hdr); got != c.want {
+			t.Errorf("%s: HTTP %d, want %d", c.name, got, c.want)
+		}
+	}
+
+	// A token never used for PlaybackInfo is checked against Jellyfin once.
+	srv.tokens.mu.Lock()
+	delete(srv.tokens.entries, "secret")
+	srv.tokens.mu.Unlock()
+	if got := status(direct+"&api_key=secret", nil); got != 200 {
+		t.Errorf("token checked against Jellyfin: HTTP %d, want 200", got)
 	}
 }

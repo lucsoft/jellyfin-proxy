@@ -14,10 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/hls"
-	"jellyfin-proxy/internal/mkv"
-	"jellyfin-proxy/internal/rangecache"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/hls"
+	"github.com/lucsoft/jellyfin-proxy/internal/mkv"
+	"github.com/lucsoft/jellyfin-proxy/internal/rangecache"
 )
 
 type Options struct {
@@ -45,7 +45,8 @@ type Server struct {
 	rp    *httputil.ReverseProxy
 	local string // address of the loopback listener for ffmpeg
 
-	locks sync.Map // sourceID -> *sync.Mutex
+	locks  sync.Map // sourceID -> *sync.Mutex
+	tokens tokenCache
 
 	mu        sync.Mutex
 	sources   map[string]*Source

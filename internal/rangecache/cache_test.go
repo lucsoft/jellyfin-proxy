@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
 )
 
 // rangeServer serves data with range support, throttled per connection,

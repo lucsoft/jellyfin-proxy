@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/mkv"
-	"jellyfin-proxy/internal/testmedia"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/mkv"
+	"github.com/lucsoft/jellyfin-proxy/internal/testmedia"
 )
 
 func newTestSession(t *testing.T, cfg Config) (*Session, *mkv.Timeline, *events.Log) {

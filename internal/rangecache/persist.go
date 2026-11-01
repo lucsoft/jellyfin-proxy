@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
 )
 
 // A cache saved on shutdown lives in <Dir>/saved-<ID> and, besides the

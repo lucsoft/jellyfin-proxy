@@ -19,10 +19,10 @@ import (
 	"syscall"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/hls"
-	"jellyfin-proxy/internal/rangecache"
-	"jellyfin-proxy/internal/server"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/hls"
+	"github.com/lucsoft/jellyfin-proxy/internal/rangecache"
+	"github.com/lucsoft/jellyfin-proxy/internal/server"
 )
 
 func main() {

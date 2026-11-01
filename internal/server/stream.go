@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"jellyfin-proxy/internal/events"
-	"jellyfin-proxy/internal/rangecache"
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
+	"github.com/lucsoft/jellyfin-proxy/internal/rangecache"
 )
 
 // handleHLS serves /proxy/hls/{id}/master.m3u8 and /proxy/hls/{id}/seg/{k}.ts
@@ -22,6 +22,9 @@ func (s *Server) handleHLS(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/proxy/hls/"), "/")
 	if len(parts) < 2 {
 		http.NotFound(w, r)
+		return
+	}
+	if !s.requireAuth(w, r) {
 		return
 	}
 	src := s.sourceFromURL(r, parts[0])

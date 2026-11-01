@@ -29,11 +29,25 @@ Client ──Direct Play or HLS (LAN)──► Proxy ──few large range reque
 
 ffmpeg reads the cache through its own listener on `127.0.0.1:<random>`, which is never reachable from the LAN.
 
-## Build and run
+## Requirements
+
+- Go (version in `go.mod`) to build
+- ffmpeg on the `PATH` (only needed when audio has to be converted, and for the tests)
+- A Jellyfin server that answers HTTP range requests for `/Videos/{id}/stream?static=true`
+
+## Install
+
+```bash
+go install github.com/lucsoft/jellyfin-proxy/cmd/jfproxy@latest
+```
+
+or from a checkout:
 
 ```bash
 go build -o bin/jfproxy ./cmd/jfproxy
 ```
+
+## Run
 
 ```bash
 ./bin/jfproxy -upstream https://jellyfin.example.com -listen :4070 -public http://192.168.1.20:4070 -servername Jellyfin-Proxy -events /tmp/jf-events.jsonl
@@ -45,6 +59,13 @@ Point the Jellyfin client at the proxy (`http://<proxy-host>:4070`) instead of t
 - **Timelines** of finished segments with client and ffmpeg positions, and of what is cached across the file
 - **Playback state** with the reason ffmpeg last started, running server requests and every client request with wait and transfer time
 - **Events**: restarts, seeks, released data and errors, each with its reason
+
+## Security
+
+- **Media access needs a Jellyfin token.** Stream, segment and init requests are only served with a token (`api_key` or the `Authorization` header) that Jellyfin accepts. The proxy checks unknown tokens against `/Users/Me` and caches the result for a few minutes.
+- **The dashboard has no login.** `/` and `/proxy/api/state` show titles, positions and the event log to anyone who can reach the proxy. Run it only on a network you trust, or bind it to a specific interface with `-listen`.
+- **Tokens appear in URLs.** Like Jellyfin's own transcoding URLs, the playlists the proxy generates carry `api_key` in segment URLs. Use HTTPS in front of the proxy if the network between client and proxy is not trusted.
+- The cache (`-dir`, default in the system temp folder) holds parts of the media files. It is dropped after 15 minutes without playback; on shutdown it is saved, and saved caches older than 24 hours are deleted on the next start.
 
 ## Flags
 
@@ -83,3 +104,7 @@ go build -o bin/fakejellyfin ./cmd/fakejellyfin
 - MKV with an index (cues) only; other containers are passed through to the server unchanged.
 - Video is always copied, there is no video transcoding or tone mapping. The first version with VideoToolbox transcoding is in the first commit.
 - Switching to an incompatible audio track during Direct Play only works if the client requests new PlaybackInfo.
+
+## License
+
+[MIT](LICENSE)
