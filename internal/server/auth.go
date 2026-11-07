@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/lucsoft/jellyfin-proxy/internal/events"
 )
 
 // The proxy serves media from its own cache, so Jellyfin never sees those
@@ -54,7 +57,17 @@ func (s *Server) authorized(r *http.Request) bool {
 		return e.ok
 	}
 
-	ok := s.checkToken(r.Context(), token)
+	ok, sure := s.checkToken(r.Context(), token)
+	if !sure {
+		// Jellyfin could not be asked (network, 5xx). A token it accepted
+		// before stays good; refusing it would break a seek mid-movie.
+		if !found || !e.ok {
+			s.ev.Emit("proxy", "token_check", events.Warn, "Could not verify an unknown token with Jellyfin: refusing")
+			return false
+		}
+		s.ev.Emit("proxy", "token_check", events.Warn, "Could not verify the token with Jellyfin; it was valid before, letting the request through")
+		ok = true
+	}
 	s.tokens.mu.Lock()
 	if s.tokens.entries == nil {
 		s.tokens.entries = map[string]tokenEntry{}
@@ -68,21 +81,28 @@ func (s *Server) authorized(r *http.Request) bool {
 	return ok
 }
 
-// checkToken asks Jellyfin who the token belongs to; any 2xx means valid.
-func (s *Server) checkToken(ctx context.Context, token string) bool {
+// checkToken asks Jellyfin who the token belongs to; any 2xx means valid,
+// 401/403 means invalid. sure is false when Jellyfin gave no clear answer.
+func (s *Server) checkToken(ctx context.Context, token string) (ok, sure bool) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.opt.Upstream.String()+"/Users/Me", nil)
 	if err != nil {
-		return false
+		return false, true
 	}
 	req.Header.Set("X-Emby-Token", token)
 	resp, err := s.opt.APIClient.Do(req)
 	if err != nil {
-		return false
+		return false, false
 	}
 	resp.Body.Close()
-	return resp.StatusCode >= 200 && resp.StatusCode < 300
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return true, true
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return false, true
+	}
+	return false, false
 }
 
 // requireAuth answers 401 and returns false when the request has no valid token.
@@ -90,6 +110,11 @@ func (s *Server) requireAuth(w http.ResponseWriter, r *http.Request) bool {
 	if s.authorized(r) {
 		return true
 	}
+	why := "no token in the request"
+	if tokenFrom(r) != "" {
+		why = "Jellyfin did not accept the token (/Users/Me)"
+	}
+	s.ev.Emit("proxy", "unauthorized", events.Warn, fmt.Sprintf("Refused %s %s with 401: %s", r.Method, r.URL.Path, why))
 	http.Error(w, "a valid Jellyfin token is required (api_key or Authorization header)", http.StatusUnauthorized)
 	return false
 }

@@ -189,17 +189,38 @@ func (s *Server) serveDirect(w http.ResponseWriter, r *http.Request, src *Source
 		http.Error(w, "Cache: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	s.serveCache(w, r, c, "Client")
+	// Each client request is worth an event: a seek in Direct Play is only
+	// visible here, and when the client fails after one, this shows whether
+	// it even asked again and what it got.
+	start, _, _ := parseRange(r.Header.Get("Range"), c.Size)
+	at := fmt.Sprintf("%.0f MB", float64(start)/1e6)
+	s.mu.Lock()
+	tl := s.timelines[src.ID]
+	s.mu.Unlock()
+	if tl != nil {
+		at = clock(tl.TimeAtOffset(start)) + ", " + at
+	}
+	t0 := time.Now()
+	n, err := s.serveCache(w, r, c, "Client")
+	msg := fmt.Sprintf("Client read from %s (Range %q): %.1f MB in %s", at, r.Header.Get("Range"),
+		float64(n)/1e6, time.Since(t0).Round(100*time.Millisecond))
+	switch {
+	case err != nil:
+		s.ev.Emit(short(src.ID), "client_read", events.Warn, msg+", failed: "+err.Error())
+	default:
+		s.ev.Emit(short(src.ID), "client_read", events.Info, msg)
+	}
 }
 
 // serveCache answers a (range) request from the cache. The reader's
-// position determines what gets prefetched.
-func (s *Server) serveCache(w http.ResponseWriter, r *http.Request, c *rangecache.Cache, who string) {
+// position determines what gets prefetched. It returns the bytes sent and
+// why it stopped early (nil when done or when the client hung up).
+func (s *Server) serveCache(w http.ResponseWriter, r *http.Request, c *rangecache.Cache, who string) (int64, error) {
 	start, end, ok := parseRange(r.Header.Get("Range"), c.Size)
 	if !ok {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", c.Size))
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		return
+		return 0, fmt.Errorf("range not satisfiable (size %d)", c.Size)
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Type", "video/x-matroska")
@@ -211,27 +232,31 @@ func (s *Server) serveCache(w http.ResponseWriter, r *http.Request, c *rangecach
 	}
 	w.WriteHeader(status)
 	if r.Method == http.MethodHead {
-		return
+		return 0, nil
 	}
 
 	rd := c.NewReader(fmt.Sprintf("%s from %.0f MB", who, float64(start)/1e6), start)
 	defer rd.Close()
 	buf := make([]byte, 256<<10)
+	var sent int64
 	for pos := start; pos <= end; {
 		n, err := rd.Read(r.Context(), buf[:min(int64(len(buf)), end-pos+1)])
 		if n > 0 {
 			if _, werr := w.Write(buf[:n]); werr != nil {
-				return
+				return sent, nil // client hung up
 			}
 			pos += int64(n)
+			sent += int64(n)
 		}
 		if err != nil {
-			if !errors.Is(err, rangecache.ErrClosed) && r.Context().Err() == nil {
-				s.ev.Emit(c.Label, "cache_read_error", events.Warn, who+" read aborted: "+err.Error())
+			if errors.Is(err, rangecache.ErrClosed) || r.Context().Err() != nil {
+				return sent, nil
 			}
-			return
+			s.ev.Emit(c.Label, "cache_read_error", events.Warn, who+" read aborted: "+err.Error())
+			return sent, err
 		}
 	}
+	return sent, nil
 }
 
 // parseRange understands "bytes=a-", "bytes=a-b" and "bytes=-n".

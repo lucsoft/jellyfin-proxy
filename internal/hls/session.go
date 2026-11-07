@@ -46,7 +46,8 @@ type Config struct {
 // source (MediaStream.Index in Jellyfin), -1 = first audio track.
 type Audio struct {
 	ID       int    // index as the client knows it (may be a virtual track)
-	Index    int    // real stream index in the source
+	Index    int    // real stream index in the source (Jellyfin's MediaStream.Index)
+	Nth      int    // position among the file's audio tracks (ffmpeg 0:a:N), -1 = unknown
 	Copy     bool   // track is already client-compatible and is only copied
 	Filter   string // ffmpeg audio filter, e.g. the dynamic range compressor
 	Codec    string
@@ -427,9 +428,14 @@ func (s *Session) launchLocked(k, end int, reason string) *run {
 	}
 	args = append(args, s.cfg.InputArgs...)
 	args = append(args, "-i", s.input, "-map", "0:v:0")
-	if s.audio.Index >= 0 {
+	switch {
+	case s.audio.Nth >= 0:
+		// Jellyfin's index is not ffmpeg's: external subtitles and fonts
+		// shift it. The position among the audio tracks is the same for both.
+		args = append(args, "-map", fmt.Sprintf("0:a:%d", s.audio.Nth))
+	case s.audio.Index >= 0:
 		args = append(args, "-map", fmt.Sprintf("0:%d", s.audio.Index))
-	} else {
+	default:
 		args = append(args, "-map", "0:a:0?")
 	}
 	args = append(args, "-c:v", "copy")

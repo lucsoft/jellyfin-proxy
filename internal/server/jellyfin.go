@@ -30,6 +30,9 @@ type playbackRequest struct {
 	Token    string
 	Subtitle *int     // SubtitleStreamIndex the client asked for (-1 = off)
 	SubProfs []string // how the client can show subtitles, e.g. "pgssub:Encode"
+	// NoDirect: the client asks with EnableDirectPlay=false. jellyfin-web
+	// does that right after a playback error, to fall back to transcoding.
+	NoDirect bool
 }
 
 // Handler returns the public handler (Client and dashboard).
@@ -125,12 +128,14 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request, item
 			SubtitleStreamIndex *int
 			StartTimeTicks      *int64
 			MediaSourceId       string
+			EnableDirectPlay    *bool
 			DeviceProfile       struct {
 				SubtitleProfiles []struct{ Format, Method string }
 			}
 		}
 		if json.Unmarshal(body, &b) == nil {
 			pr.Audio, pr.SourceID, pr.Subtitle = b.AudioStreamIndex, b.MediaSourceId, b.SubtitleStreamIndex
+			pr.NoDirect = b.EnableDirectPlay != nil && !*b.EnableDirectPlay
 			for _, sp := range b.DeviceProfile.SubtitleProfiles {
 				pr.SubProfs = append(pr.SubProfs, sp.Format+":"+sp.Method)
 			}
@@ -170,6 +175,9 @@ func (s *Server) handlePlaybackInfo(w http.ResponseWriter, r *http.Request, item
 	if v := queryCI(r, "MediaSourceId"); v != "" {
 		pr.SourceID = v
 	}
+	if strings.EqualFold(queryCI(r, "EnableDirectPlay"), "false") {
+		pr.NoDirect = true
+	}
 	s.rp.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), playbackInfoKey, pr)))
 }
 
@@ -204,6 +212,13 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 		src.Mode = "hls"
 		if s.directOK(src, audio) {
 			src.Mode = "direct"
+			if pr.NoDirect {
+				// Forcing Direct Play again would only repeat the error
+				// (and jellyfin-web retries a few times, then gives up).
+				src.Mode = "hls"
+				s.ev.Emit(short(src.ID), "client_error", events.Warn,
+					fmt.Sprintf("Client asks again without Direct Play at %s – it hit a playback error; continuing via HLS", clock(pr.StartSec)))
+			}
 		}
 		s.mu.Lock()
 		if old := s.sources[src.ID]; old != nil {
@@ -303,6 +318,7 @@ func sourceFrom(ms map[string]any, pr *playbackRequest) *Source {
 		if v, ok := m["Channels"].(float64); ok {
 			st.Channels = int(v)
 		}
+		st.External, _ = m["IsExternal"].(bool)
 		src.Streams = append(src.Streams, st)
 		if st.Type == "Audio" && src.DefaultAudio < 0 {
 			src.DefaultAudio = st.Index
@@ -495,20 +511,29 @@ func realAudioIndex(body []byte) []byte {
 	return body
 }
 
-// addRDRTracks lists a "reduced dynamic range" variant right after every
-// audio track, so clients offer it in their normal audio menu.
+// addRDRTracks lists a "reduced dynamic range" variant of every audio track,
+// so clients offer it in their normal audio menu. The variants come after
+// the last real audio track: in Direct Play, jellyfin-web switches tracks by
+// counting the audio entries, and a variant in between would shift every
+// track after it. Their codec is one no client plays, so picking one always
+// goes back to the server (new PlaybackInfo -> HLS) instead of switching the
+// player to the n-th track of the file.
 func (s *Server) addRDRTracks(ms map[string]any) {
 	streams, _ := ms["MediaStreams"].([]any)
-	var out []any
-	for _, x := range streams {
-		out = append(out, x)
+	var variants []any
+	last := -1
+	for i, x := range streams {
 		m, _ := x.(map[string]any)
 		if m == nil || m["Type"] != "Audio" {
 			continue
 		}
+		last = i
 		idx, ok := m["Index"].(float64)
 		if !ok || int(idx) >= rdrBase {
 			continue
+		}
+		if ext, _ := m["IsExternal"].(bool); ext {
+			continue // not inside the MKV, ffmpeg cannot reach it
 		}
 		v := make(map[string]any, len(m))
 		for k, val := range m {
@@ -518,17 +543,28 @@ func (s *Server) addRDRTracks(ms map[string]any) {
 		v["Index"] = rdrBase + int(idx)
 		v["DisplayTitle"] = title + " · Reduced dynamic range"
 		v["Title"] = v["DisplayTitle"]
-		v["Codec"] = s.opt.AudioCodec
+		v["Codec"] = rdrCodec
 		v["IsDefault"] = false
 		if ch, ok := m["Channels"].(float64); !ok || int(ch) > s.opt.AudioChannels {
 			v["Channels"] = s.opt.AudioChannels
 		}
 		delete(v, "Profile")
 		delete(v, "BitRate")
-		out = append(out, v)
+		variants = append(variants, v)
 	}
+	if len(variants) == 0 {
+		return
+	}
+	out := make([]any, 0, len(streams)+len(variants))
+	out = append(out, streams[:last+1]...)
+	out = append(out, variants...)
+	out = append(out, streams[last+1:]...)
 	ms["MediaStreams"] = out
 }
+
+// rdrCodec is the codec name of the virtual tracks. It must not be (part
+// of) a codec the client can play itself, see addRDRTracks.
+const rdrCodec = "rdr"
 
 func orNone(s string) string {
 	if s == "" {

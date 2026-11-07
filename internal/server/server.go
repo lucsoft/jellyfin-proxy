@@ -84,6 +84,7 @@ type Stream struct {
 	Codec    string `json:"codec"`
 	Title    string `json:"title"`
 	Channels int    `json:"channels"`
+	External bool   `json:"external,omitempty"` // separate file next to the MKV
 }
 
 // ClientState is what the client itself reports about its playback.
@@ -342,10 +343,20 @@ func (src *Source) videoCodec() string {
 // audioFor picks the audio track and target codec. client-compatible tracks are copied.
 func (s *Server) audioFor(src *Source, id int) hls.Audio {
 	index, rdr := splitAudio(id)
-	a := hls.Audio{ID: id, Index: index, Codec: s.opt.AudioCodec, Bitrate: s.opt.AudioBitrate, Channels: s.opt.AudioChannels}
+	a := hls.Audio{ID: id, Index: index, Nth: -1, Codec: s.opt.AudioCodec, Bitrate: s.opt.AudioBitrate, Channels: s.opt.AudioChannels}
+	nth := 0 // audio tracks inside the MKV before this one, see hls.Audio.Nth
 	for _, st := range src.Streams {
-		if st.Index != index || st.Type != "Audio" {
+		if st.Type != "Audio" {
 			continue
+		}
+		if st.Index != index {
+			if !st.External {
+				nth++
+			}
+			continue
+		}
+		if !st.External {
+			a.Nth = nth
 		}
 		for _, ok := range s.opt.CopyAudio {
 			if strings.EqualFold(st.Codec, ok) {

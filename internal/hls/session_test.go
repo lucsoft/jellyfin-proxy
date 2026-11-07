@@ -34,7 +34,7 @@ func newTestSession(t *testing.T, cfg Config) (*Session, *mkv.Timeline, *events.
 	if cfg.IdleStop == 0 {
 		cfg.IdleStop = time.Minute
 	}
-	s, err := New(cfg, "id", "id", tl, file, Audio{Index: 2, Codec: "ac3", Bitrate: "192k", Channels: 2, Label: "AC3"}, "h264")
+	s, err := New(cfg, "id", "id", tl, file, Audio{Index: 2, Nth: -1, Codec: "ac3", Bitrate: "192k", Channels: 2, Label: "AC3"}, "h264")
 	if err != nil {
 		t.Fatal(err)
 	}

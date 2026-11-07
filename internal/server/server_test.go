@@ -353,7 +353,86 @@ func TestReducedDynamicRangeTrack(t *testing.T) {
 	srv.mu.Lock()
 	sess := srv.sessions["src1"]
 	srv.mu.Unlock()
-	if a := sess.Audio(); a.Filter != DefaultRDRFilter || a.Index != 2 || a.Copy {
+	if a := sess.Audio(); a.Filter != DefaultRDRFilter || a.Index != 2 || a.Nth != 1 || a.Copy {
 		t.Fatalf("session audio %+v", a)
+	}
+}
+
+// Jellyfin's stream index is not ffmpeg's (external files and fonts shift
+// it), so the HLS session picks the track by its position among the
+// audio tracks inside the MKV.
+func TestAudioMapsByPositionAmongAudioTracks(t *testing.T) {
+	s := &Server{opt: Options{AudioCodec: "ac3", AudioChannels: 6, RDRFilter: "x"}}
+	src := &Source{Streams: []Stream{
+		{Index: 0, Type: "Subtitle", External: true},
+		{Index: 1, Type: "Video"},
+		{Index: 2, Type: "Audio", Codec: "dts", Title: "English"},
+		{Index: 3, Type: "Audio", Codec: "ac3", Title: "Commentary", External: true},
+		{Index: 4, Type: "Audio", Codec: "ac3", Title: "German"},
+	}}
+	if a := s.audioFor(src, rdrBase+4); a.Index != 4 || a.Nth != 1 || a.Filter != "x" {
+		t.Fatalf("German RDR: %+v", a)
+	}
+	if a := s.audioFor(src, 2); a.Nth != 0 {
+		t.Fatalf("English: %+v", a)
+	}
+	if a := s.audioFor(src, 3); a.Nth != -1 {
+		t.Fatalf("external track must not map into the MKV: %+v", a)
+	}
+}
+
+// The variants come after all real audio tracks, so counting the audio
+// entries (jellyfin-web in Direct Play) still finds the right real track,
+// and their codec makes the client ask the server instead.
+func TestRDRTracksFollowRealAudio(t *testing.T) {
+	s := &Server{opt: Options{AudioCodec: "ac3", AudioChannels: 6}}
+	ms := map[string]any{"MediaStreams": []any{
+		map[string]any{"Index": 0.0, "Type": "Video"},
+		map[string]any{"Index": 1.0, "Type": "Audio", "Codec": "ac3", "DisplayTitle": "English"},
+		map[string]any{"Index": 2.0, "Type": "Audio", "Codec": "ac3", "DisplayTitle": "German"},
+		map[string]any{"Index": 3.0, "Type": "Subtitle"},
+	}}
+	s.addRDRTracks(ms)
+	var got []string
+	for _, x := range ms["MediaStreams"].([]any) {
+		m := x.(map[string]any)
+		got = append(got, strconv.Itoa(int(toFloat(m["Index"])))+":"+m["Type"].(string))
+		if toFloat(m["Index"]) >= rdrBase && m["Codec"] != rdrCodec {
+			t.Fatalf("variant codec %v", m["Codec"])
+		}
+	}
+	if want := "0:Video 1:Audio 2:Audio 1001:Audio 1002:Audio 3:Subtitle"; strings.Join(got, " ") != want {
+		t.Fatalf("order %q, want %q", strings.Join(got, " "), want)
+	}
+}
+
+func toFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	}
+	return -1
+}
+
+// After a playback error jellyfin-web asks again with EnableDirectPlay=false.
+// Answering with Direct Play again would just repeat the error.
+func TestRetryWithoutDirectPlayGoesToHLS(t *testing.T) {
+	file := testmedia.MKV(t)
+	_, tv, _ := newTestServer(t, file, true)
+	req, _ := http.NewRequest("POST", tv.URL+"/Items/item1/PlaybackInfo",
+		strings.NewReader(`{"AudioStreamIndex":2,"MediaSourceId":"src1","EnableDirectPlay":false,"StartTimeTicks":100000000}`))
+	req.Header.Set("Authorization", `MediaBrowser Token="secret"`)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pi struct{ MediaSources []map[string]any }
+	json.NewDecoder(resp.Body).Decode(&pi)
+	resp.Body.Close()
+	ms := pi.MediaSources[0]
+	if tu, _ := ms["TranscodingUrl"].(string); ms["SupportsDirectPlay"] != false || !strings.Contains(tu, "start=10.000") {
+		t.Fatalf("want HLS from 0:00:10, got direct=%v url=%q", ms["SupportsDirectPlay"], tu)
 	}
 }
