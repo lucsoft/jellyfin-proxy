@@ -73,7 +73,7 @@ type Source struct {
 	Streams      []Stream `json:"streams"`
 	DefaultAudio int      `json:"default_audio"`
 	Audio        int      `json:"audio"` // audio track chosen by the client
-	Mode         string   `json:"mode"`  // "direct" or "hls"
+	Mode         string   `json:"mode"`  // "direct", "hls" or "server" (Jellyfin handles it)
 	token        string
 	Client       ClientState `json:"client"`
 }
@@ -338,6 +338,18 @@ func (src *Source) videoCodec() string {
 		}
 	}
 	return ""
+}
+
+// hlsCapable reports whether the proxy's HLS (video copied into fMP4/TS)
+// can carry this video. HLS players take H.264 and HEVC; VC-1 or MPEG-2
+// would need a video transcode, which only Jellyfin does. Unknown (e.g.
+// a source rebuilt from a URL) counts as capable.
+func (src *Source) hlsCapable() bool {
+	switch src.videoCodec() {
+	case "", "h264", "avc", "hevc", "h265":
+		return true
+	}
+	return false
 }
 
 // audioFor picks the audio track and target codec. client-compatible tracks are copied.

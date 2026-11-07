@@ -225,7 +225,7 @@ function renderSource(el, s) {
   const b = s.buffer, ss = s.session, cs = s.cache;
   const direct = s.mode === 'direct' && !ss;
   k('name').textContent = s.name || s.id;
-  k('label').textContent = [s.label, s.container, cs && mb(cs.size), s.mode && (s.mode === 'direct' ? 'Direct Play' : 'HLS')].filter(Boolean).join(' · ');
+  k('label').textContent = [s.label, s.container, cs && mb(cs.size), s.mode && ({direct: 'Direct Play', hls: 'HLS', server: 'Jellyfin transcodes'}[s.mode] || s.mode)].filter(Boolean).join(' · ');
   const lvl = b ? b.level : 'warn';
   k('status').className = 'status ' + lvl;
   k('status').innerHTML = `<i></i><span class="icon">${ICON[lvl]}</span><span>${esc(b ? b.status : ss ? 'Reading index…' : cs ? 'Cache only, not playing' : 'Ready')}</span>`;

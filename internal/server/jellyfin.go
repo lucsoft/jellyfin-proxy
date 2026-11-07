@@ -203,7 +203,11 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 		if pr.Audio != nil && (pr.SourceID == "" || pr.SourceID == src.ID) {
 			audio = *pr.Audio
 		}
-		if s.opt.RDR {
+		hlsOK := src.hlsCapable()
+		if !hlsOK {
+			audio, _ = splitAudio(audio) // no variants offered; a stale choice gets the real track
+		}
+		if s.opt.RDR && hlsOK {
 			s.addRDRTracks(ms)
 		}
 		ms["DefaultAudioStreamIndex"] = audio // the client's choice, virtual tracks included
@@ -217,8 +221,11 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 				// (and jellyfin-web retries a few times, then gives up).
 				src.Mode = "hls"
 				s.ev.Emit(short(src.ID), "client_error", events.Warn,
-					fmt.Sprintf("Client asks again without Direct Play at %s – it hit a playback error; continuing via HLS", clock(pr.StartSec)))
+					fmt.Sprintf("Client asks again without Direct Play at %s – it hit a playback error", clock(pr.StartSec)))
 			}
+		}
+		if src.Mode == "hls" && !hlsOK {
+			src.Mode = "server" // Jellyfin's own answer stays, it transcodes
 		}
 		s.mu.Lock()
 		if old := s.sources[src.ID]; old != nil {
@@ -232,6 +239,12 @@ func (s *Server) rewritePlaybackInfo(root map[string]any, pr *playbackRequest) {
 
 		a := s.audioFor(src, audio)
 		s.logSubtitles(src, ms, pr)
+		if src.Mode == "server" {
+			s.ev.Emit(short(src.ID), "passthrough", events.Info,
+				fmt.Sprintf("Client requests %q (audio %s, start %s) -> Jellyfin: the proxy's HLS only copies H.264/HEVC video, this is %s",
+					src.Name, a.Label, clock(pr.StartSec), src.videoCodec()))
+			continue
+		}
 		if src.Mode == "direct" {
 			// Direct Play stays allowed; the client fetches /Videos/{id}/stream, and
 			// the proxy serves that from the cache. Report the requested audio
@@ -349,6 +362,9 @@ func (s *Server) handleVideoStream(w http.ResponseWriter, r *http.Request) bool 
 	audio := src.Audio
 	if v, err := strconv.Atoi(queryCI(r, "AudioStreamIndex")); err == nil {
 		audio = v
+	}
+	if !s.directOK(src, audio) && !src.hlsCapable() {
+		return false // our HLS cannot copy this video: Jellyfin answers
 	}
 	if !s.requireAuth(w, r) {
 		return true

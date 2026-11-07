@@ -18,6 +18,7 @@ Client ──Direct Play or HLS (LAN)──► Proxy ──few large range reque
 - **Audio track the client can play (AC3, EAC3, AAC)** – Direct Play: the client reads the original MKV, the bytes come from the local cache.
 - **Audio track the client cannot play (TrueHD, DTS)** – HLS: ffmpeg copies the video, converts the audio to AC3 and writes fMP4 segments.
 - **A "Reduced dynamic range" track** – HLS as well: the proxy adds such a variant for every audio track and runs it through a compressor, for late-night watching.
+- **Video other than H.264/HEVC (e.g. VC-1)** – the proxy's HLS can only copy video, and HLS players do not take VC-1. Such files get no "Reduced dynamic range" tracks; Direct Play still comes from the cache, everything else (an audio track the client cannot play, a retry after a playback error) is left to Jellyfin, which transcodes.
 - **Not an MKV** – the request is passed through unchanged and the server decides.
 
 ## Packages

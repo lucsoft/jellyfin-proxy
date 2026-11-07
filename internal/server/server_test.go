@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -38,9 +39,10 @@ func fakeJellyfin(t *testing.T, file string) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		io.WriteString(w, `{"MediaSources":[{"Id":"src1","Name":"Test movie","Container":"mkv","Size":`+
 			itoa(len(data))+`,"SupportsDirectPlay":true,"DefaultAudioStreamIndex":1,"MediaStreams":[
-			{"Index":0,"Type":"Video","Codec":"h264"},
+			{"Index":0,"Type":"Video","Codec":"`+videoCodec(t)+`"},
 			{"Index":1,"Type":"Audio","Codec":"aac","DisplayTitle":"AAC Stereo","Channels":2},
-			{"Index":2,"Type":"Audio","Codec":"ac3","DisplayTitle":"AC3 Stereo","Channels":2}]}],"PlaySessionId":"x"}`)
+			{"Index":2,"Type":"Audio","Codec":"ac3","DisplayTitle":"AC3 Stereo","Channels":2}],
+			"TranscodingUrl":"/videos/item1/master.m3u8?jellyfin=1"}],"PlaySessionId":"x"}`)
 	})
 	mux.HandleFunc("GET /Videos/{item}/stream", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("api_key") != "secret" {
@@ -63,6 +65,15 @@ func fakeJellyfin(t *testing.T, file string) *httptest.Server {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+var fakeCodecs sync.Map // test name -> video codec the fake Jellyfin reports
+
+func videoCodec(t *testing.T) string {
+	if c, ok := fakeCodecs.Load(t.Name()); ok {
+		return c.(string)
+	}
+	return "h264"
+}
 
 var lastPlaybackBody atomic.Value // body of the last PlaybackInfo Jellyfin received
 
@@ -434,5 +445,39 @@ func TestRetryWithoutDirectPlayGoesToHLS(t *testing.T) {
 	ms := pi.MediaSources[0]
 	if tu, _ := ms["TranscodingUrl"].(string); ms["SupportsDirectPlay"] != false || !strings.Contains(tu, "start=10.000") {
 		t.Fatalf("want HLS from 0:00:10, got direct=%v url=%q", ms["SupportsDirectPlay"], tu)
+	}
+}
+
+// The proxy's HLS only copies H.264/HEVC. For VC-1 it offers no RDR
+// variants and leaves anything that is not Direct Play to Jellyfin.
+func TestVC1OnlyOffersWhatWorks(t *testing.T) {
+	fakeCodecs.Store(t.Name(), "vc1")
+	file := testmedia.MKV(t)
+	_, tv, _ := newTestServer(t, file, true)
+	srvRDR := func(body string) map[string]any {
+		req, _ := http.NewRequest("POST", tv.URL+"/Items/item1/PlaybackInfo", strings.NewReader(body))
+		req.Header.Set("Authorization", `MediaBrowser Token="secret"`)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var pi struct{ MediaSources []map[string]any }
+		json.NewDecoder(resp.Body).Decode(&pi)
+		return pi.MediaSources[0]
+	}
+	// AAC is not in CopyAudio here: it would need our HLS -> Jellyfin's answer stays.
+	ms := srvRDR(`{"AudioStreamIndex":1,"MediaSourceId":"src1"}`)
+	if tu, _ := ms["TranscodingUrl"].(string); !strings.Contains(tu, "jellyfin=1") {
+		t.Fatalf("Jellyfin's TranscodingUrl was replaced: %q", tu)
+	}
+	for _, x := range ms["MediaStreams"].([]any) {
+		if toFloat(x.(map[string]any)["Index"]) >= rdrBase {
+			t.Fatal("RDR variant offered for VC-1")
+		}
+	}
+	// AC3 plays directly: Direct Play from the cache still works.
+	if ms := srvRDR(`{"AudioStreamIndex":2,"MediaSourceId":"src1"}`); ms["SupportsDirectPlay"] != true || ms["TranscodingUrl"] != nil {
+		t.Fatalf("want Direct Play, got %v %v", ms["SupportsDirectPlay"], ms["TranscodingUrl"])
 	}
 }
